@@ -28,20 +28,32 @@ class GameService:
         Получить список всех игроков в игре
         """
 
-        result = await self.db.execute(
+        players = await self.db.execute(
             select(Player).where(Player.game_id == game_id)
-        )
-        return result.scalars().all()
+        ).scalars().all()
+        return players
+
+    async def get_game_player(self, game_id: uuid.UUID, player_id: uuid.UUID) -> Player:
+        """
+        Получить список всех игроков в игре
+        """
+
+        player = await self.db.execute(
+            select(Player).where(Player.game_id == game_id)
+        ).scalars()
+
+        #return players
 
     async def get_alive_players(self, game_id: uuid.UUID) -> list[Player]:
         """
         Получить список живых игроков в игре
         """
-        result = await self.db.execute(
+        alive_players = await self.db.execute(
             select(Player)
             .where(Player.game_id == game_id)
             .where(Player.is_alive == True)
-        )
-        return result.scalars().all()
+        ).scalars().all()
+
+        return alive_players
 
 
