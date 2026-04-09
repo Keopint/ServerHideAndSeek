@@ -1,5 +1,4 @@
 import uuid
-from db import get_db
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from models import Game, Player, Role, game_roles, PlayerRole, ZoneType, Zone, Ability, role_abilities, role_events, \
     Event, GameStatus, GameZone
