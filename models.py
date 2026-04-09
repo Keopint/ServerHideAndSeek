@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from geoalchemy2 import Geometry
 from datetime import datetime
 import uuid
+from sqlalchemy.orm import validates
 
 Base = declarative_base()
 
@@ -19,6 +20,12 @@ class GameStatus(enum.Enum):
     waiting = "waiting"
     active = "active"
     finished = "finished"
+
+class EffectType(enum.Enum):
+    shield = "shield"
+
+class EventType(enum.Enum):
+    bombordiro = "bombordiro"
 
 
 class ZoneType(enum.Enum):
@@ -95,6 +102,7 @@ class Role(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
+    health = Column(Integer, nullable=False, default=100)
 
     # Relationships
     victory_conditions = relationship(
@@ -175,14 +183,51 @@ class Ability(Base):
     used_by_players = relationship("UsedAbility", back_populates="ability_ref")
 
 
+class GameZone(Base):
+    __tablename__ = "game_zones"
+
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID, ForeignKey("games.id"))
+    type = Column(Enum(ZoneType))        # red, orange, green, gray, black
+    center_lat = Column(Float)
+    center_lng = Column(Float)
+    radius = Column(Float)
+    starts_at = Column(DateTime(timezone=True))   # когда зона появляется
+    ends_at = Column(DateTime(timezone=True))     # когда зона исчезает / срабатывает
+    created_by = Column(UUID, ForeignKey("players.id"), nullable=True)  # если создана способностью
+
+
+class PlayerEffect(Base):
+    __tablename__ = "player_effects"
+
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    player_id = Column(UUID, ForeignKey("players.id"))
+    type = Column(Enum(EffectType))      # shield, scanner, trap_immunity, etc.
+    starts_at = Column(DateTime(timezone=True))
+    ends_at = Column(DateTime(timezone=True))
+    data = Column(JSON, nullable=True)   # доп. параметры (например, id зоны капкана)
+    is_active = Column(Boolean, default=True)
+
+
+class GameEvent(Base):
+    __tablename__ = "game_events"
+
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID, ForeignKey("games.id"))
+    event_type = Column(Enum(EventType))
+    starts_at = Column(DateTime(timezone=True))
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    payload = Column(JSON, nullable=True)
+
+
 class PlayerAbility(Base):
     __tablename__ = "player_abilities"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
     ability_id = Column(UUID(as_uuid=True), ForeignKey("abilities.id"), nullable=False)
-    recharge_time = Column(Integer(unsigned=True), nullable=False, comment="время перезарядки в секундах")
-    number_uses_left = Column(Integer(unsigned=True), nullable=False, comment="количество оставшихся использований")
+    recharge_time = Column(Integer, nullable=False, comment="время перезарядки в секундах")
+    number_uses_left = Column(Integer, nullable=False, comment="количество оставшихся использований")
     data = Column(JSON, comment="ability information")
 
     # Relationships
@@ -232,7 +277,7 @@ class Player(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
     name = Column(String, nullable=False)
-    role = Column(Enum(PlayerRole), nullable=False)
+    role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"), nullable=False)
     health = Column(Integer, nullable=False, default=100)
     is_alive = Column(Boolean, nullable=False, default=True)
     location_lat = Column(Float, nullable=False)
@@ -253,6 +298,7 @@ class Player(Base):
         back_populates="target_player",
         foreign_keys="UsedAbility.target_player_id"
     )
+    role_ref = relationship("Role")
     created_zones = relationship("Zone", back_populates="owner", foreign_keys="Zone.owner_id")
 
 
@@ -262,18 +308,20 @@ class Zone(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
     type = Column(Enum(ZoneType), nullable=False)
-    center_lat = Column(Float, nullable=False)
-    center_lng = Column(Float, nullable=False)
     radius = Column(Float, nullable=False)
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
-    expires_at = Column(DateTime, nullable=True)
-    owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), comment="player who created the zone")
-    is_active = Column(Boolean, nullable=False, default=True)
+    duration_seconds = Column(Integer, nullable=False)
     zone_data = Column(JSON, comment="additional parameters (e.g., airdrop loot)")
 
     # Relationships
-    game = relationship("Game", back_populates="zones", foreign_keys=[game_id])  # ИСПРАВЛЕНО
-    owner = relationship("Player", back_populates="created_zones", foreign_keys=[owner_id])
+    game = relationship("Game", back_populates="zones", foreign_keys=[game_id])
+
+    @validates("duration_seconds")
+    def _validate_population(self, key, duration_seconds):
+        if not duration_seconds:
+            return duration_seconds
+        if duration_seconds < 0 or duration_seconds > 1000000:
+            raise ValueError(f"Недопустимое значение для duration_seconds: {duration_seconds}")
+        return duration_seconds
 
 
 class UsedAbility(Base):
