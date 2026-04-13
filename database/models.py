@@ -17,36 +17,38 @@ import enum
 
 
 class GameStatus(enum.Enum):
-    waiting = "waiting"
-    active = "active"
-    finished = "finished"
+    WAITING = "WAITING"
+    ACTIVE = "ACTIVE"
+    FINISHED = "FINISHED"
 
 class EffectType(enum.Enum):
-    shield = "shield"
+    SHIELD = "SHIELD"
+    TRAPPED = "TRAPPED"
+    ROOTED = "ROOTED"
 
 class EventType(enum.Enum):
     bombordiro = "bombordiro"
 
 
 class ZoneType(enum.Enum):
-    safe = "safe"
-    danger = "danger"
-    warning = "warning"
-    trap = "trap"
-    snare = "snare"
-    decoy = "decoy"
+    SAFE = "SAFE"
+    DANGER = "DANGER"
+    WARNING = "WARNING"
+    TRAP = "TRAP"
+    SNARE = "SNARE"
+    DECOY = "DECOY"
 
 
 class AbilityType(enum.Enum):
-    shield = "shield"
-    intel = "intel"
-    scan = "scan"
-    personal_bomb = "personal_bomb"
-    trap = "trap"
-    snare = "snare"
-    safe_house = "safe_house"
-    mansion = "mansion"
-    home_alone = "home_alone"
+    SHIELD = "SHIELD"
+    INTEL = "INTEL"
+    SCAN = "SCAN"
+    PERSONAL_BOMB = "PERSONAL_BOMB"
+    TRAP = "TRAP"
+    SNARE = "SNARE"
+    SAFE_HOUSE = "SAFE_HOUSE"
+    MANSION = "MANSION"
+    HOME_ALONE = "HOME_ALONE"
 
 
 class EventType(enum.Enum):
@@ -195,6 +197,27 @@ class GameZone(Base):
     starts_at = Column(DateTime(timezone=True))   # когда зона появляется
     ends_at = Column(DateTime(timezone=True))     # когда зона исчезает / срабатывает
     created_by = Column(UUID, ForeignKey("players.id"), nullable=True)  # если создана способностью
+    is_active = Column(Boolean, default=True)
+
+
+class Effect(Base):
+    __tablename__ = "Effect"
+
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+    type = Column(Enum(EffectType))
+    duration_seconds = Column(Integer, nullable=False)
+
+    # Relationships
+    game = relationship("Game", back_populates="effects")
+
+    @validates("duration_seconds")
+    def _validate_population(self, key, duration_seconds):
+        if not duration_seconds:
+            return duration_seconds
+        if duration_seconds < 0 or duration_seconds > 1000000:
+            raise ValueError(f"Недопустимое значение для duration_seconds: {duration_seconds}")
+        return duration_seconds
 
 
 class PlayerEffect(Base):
@@ -240,7 +263,7 @@ class Game(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
-    status = Column(Enum(GameStatus), nullable=False, default=GameStatus.waiting)
+    status = Column(Enum(GameStatus), nullable=False, default=GameStatus.WAITING)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
     safe_zone_center_lat = Column(Float, nullable=False)
     safe_zone_center_lng = Column(Float, nullable=False)
@@ -248,6 +271,7 @@ class Game(Base):
     min_zone_radius = Column(Float, nullable=False, default=50.0)
     zone_shrink_interval = Column(Integer, nullable=False, default=120)
     game_duration = Column(Integer, nullable=False, default=1800)
+    zone_boundary_damage = Column(Integer, nullable=False, default=1),
     current_safe_zone_id = Column(UUID(as_uuid=True), ForeignKey("zones.id"),
                                   comment="optional, references active safe zone")
     last_shrink_at = Column(DateTime, comment="last time when zone was active")
@@ -267,6 +291,14 @@ class Game(Base):
         secondary=game_roles,
         back_populates="games"
     )
+
+    effects = relationship(
+        "Effect",
+        back_populates="game",
+        cascade="all, delete-orphan",
+        foreign_keys="Effect.game_id"
+    )
+
     snapshots = relationship("GameStateSnapshot", back_populates="game", cascade="all, delete-orphan")
     current_safe_zone = relationship("Zone", foreign_keys=[current_safe_zone_id], post_update=True)
 
@@ -310,7 +342,6 @@ class Zone(Base):
     type = Column(Enum(ZoneType), nullable=False)
     radius = Column(Float, nullable=False)
     duration_seconds = Column(Integer, nullable=False)
-    zone_data = Column(JSON, comment="additional parameters (e.g., airdrop loot)")
 
     # Relationships
     game = relationship("Game", back_populates="zones", foreign_keys=[game_id])

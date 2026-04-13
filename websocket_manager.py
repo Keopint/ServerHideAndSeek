@@ -67,33 +67,6 @@ class ConnectionManager:
             self.disconnect(player_id)
             return False
 
-    async def broadcast_to_game(self, game_id: uuid.UUID, message: Any, exclude_player: Optional[uuid.UUID] = None) -> int:
-        """Отправить сообщение всем игрокам в игре."""
-        game_key = str(game_id)
-        connections = self._game_connections.get(game_key, {})
-        if not connections:
-            return 0
-
-        exclude_key = str(exclude_player) if exclude_player else None
-        tasks = []
-        for player_key, ws in connections.items():
-            if player_key == exclude_key:
-                continue
-            try:
-                if isinstance(message, dict):
-                    tasks.append(ws.send_json(message))
-                else:
-                    tasks.append(ws.send_text(str(message)))
-            except Exception as e:
-                print(f"[WS] Error queuing for {player_key}: {e}")
-
-        if not tasks:
-            return 0
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        success_count = sum(1 for r in results if not isinstance(r, Exception))
-        return success_count
-
     def get_connected_players(self, game_id: uuid.UUID) -> Set[str]:
         """Вернуть список ID игроков, у которых открыт WebSocket."""
         return self._game_players.get(str(game_id), set()).copy()

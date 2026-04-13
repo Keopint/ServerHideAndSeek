@@ -1,14 +1,9 @@
-import asyncio
 import uuid
-from datetime import datetime, timezone
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
-from typing import Any, Dict
-from models import (Game, Player, PlayerRole, Ability, AbilityType, EventType, Zone, ZoneType,
-                    role_abilities, Role, game_roles, role_events, Event)
+from fastapi import HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, func
-from GameService import GameService
-from db import init_db, get_db
+from services.game_management import GameService
+from services.player import PlayerService
+from database.db import get_db
 from fastapi import APIRouter
 
 info_router = APIRouter()
@@ -34,7 +29,7 @@ async def get_game_players_info(
     service = GameService(db)
     try:
         # Получаем список игроков
-        players = await service.get_game_players(game_id)
+        players = await service.get_players_in_game(game_id)
 
         # JSON ответ
         return {
@@ -69,10 +64,10 @@ async def get_game_players_info(
         player_id: uuid.UUID,
         db: AsyncSession = Depends(get_db)
 ):
-    service = GameService(db)
+    service = PlayerService(db)
     try:
         # Получаем список игроков
-        player = await service.get_game_player(game_id, player_id)
+        player = await service.get_player_in_game(game_id, player_id)
 
         # JSON ответ
         return {

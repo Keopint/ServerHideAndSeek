@@ -1,14 +1,9 @@
-import asyncio
 import uuid
-from datetime import datetime, timezone
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
+from fastapi import HTTPException, Depends
 from typing import Any, Dict
-from models import (Game, Player, PlayerRole, Ability, AbilityType, EventType, Zone, ZoneType,
-                    role_abilities, Role, game_roles, role_events, Event, GameStatus)
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, func
-from GameService import GameService
-from db import init_db, get_db
+from services.game_management import GameService
+from database.db import get_db
 from fastapi import APIRouter
 
 game_router = APIRouter()
@@ -19,28 +14,6 @@ async def create_game(
         db: AsyncSession = Depends(get_db)
 ):
     """Создать новую игру"""
-    # Валидация обязательных полей
-    required_fields = ["name", "host_name", "center_lat", "center_lng"]
-    for field in required_fields:
-        if field not in data:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Missing required field: {field}"
-            )
-
-    # Валидация координат
-    center_lat = data["center_lat"]
-    center_lng = data["center_lng"]
-    if not (-90 <= center_lat <= 90):
-        raise HTTPException(status_code=422, detail="Invalid latitude")
-    if not (-180 <= center_lng <= 180):
-        raise HTTPException(status_code=422, detail="Invalid longitude")
-
-    # Валидация радиуса
-    safe_zone_radius = data.get("safe_zone_radius", 500.0)
-    if safe_zone_radius < 100:
-        raise HTTPException(status_code=422, detail="Radius too small (min 100m)")
-
     try:
         service = GameService(db)
         await service.create_game(data)

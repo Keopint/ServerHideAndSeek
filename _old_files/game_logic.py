@@ -6,7 +6,7 @@ from typing import List, Optional
 from geopy.distance import distance as geopy_distance
 from shapely.geometry import Point
 
-from models import (
+from database.models import (
     Game, Zone, ZoneType, EventType, AbilityType, PlayerRole
 )
 

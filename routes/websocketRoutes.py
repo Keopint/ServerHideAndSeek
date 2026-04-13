@@ -1,16 +1,13 @@
 # websocketRoutes.py
-import asyncio
 import json
 import uuid
-from typing import Optional
-from fastapi import WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from datetime import datetime, timezone
 
-from models import Game, Player, PlayerRole, GameStatus
-from db import get_db
-from GameService import GameService
+from database.db import get_db
+from services.player import PlayerService
+from services.game_management import GameService
 from websocket_manager import connection_manager
 
 # Типы сообщений, которые клиент может отправлять
@@ -26,11 +23,12 @@ async def handle_client_message(
     player_id: uuid.UUID,
     message: dict,
     db: AsyncSession,
-    service: GameService
+    player_service: PlayerService
 ):
     """Обработчик входящих сообщений от клиента."""
+
     msg_type = message.get("type")
-    payload = message.get("payload", {})
+    data = message.get("data", {})
 
     if msg_type == "ping":
         # Ответить pong с серверным временем
@@ -40,8 +38,8 @@ async def handle_client_message(
         }, player_id)
 
     elif msg_type == "update_location":
-        lat = payload.get("lat")
-        lng = payload.get("lng")
+        lat = data.get("lat")
+        lng = data.get("lng")
         if lat is None or lng is None:
             await connection_manager.send_personal({
                 "type": "error",
@@ -51,7 +49,7 @@ async def handle_client_message(
 
         # Обновить позицию игрока через сервис
         try:
-            await service.update_player_location(game_id, player_id, lat, lng)
+            await player_service.update_player_location(game_id, player_id, lat, lng)
             # Оповестить всех игроков в игре об изменении локации (кроме отправителя)
             await connection_manager.broadcast_to_game(
                 game_id,
@@ -70,8 +68,7 @@ async def handle_client_message(
             }, player_id)
 
     elif msg_type == "use_ability":
-        ability_type = payload.get("ability_type")
-        target = payload.get("target")  # опционально: координаты или ID другого игрока
+        ability_type = data.get("ability_type")
         if not ability_type:
             await connection_manager.send_personal({
                 "type": "error",
@@ -80,7 +77,7 @@ async def handle_client_message(
             return
 
         try:
-            result = await service.use_ability(game_id, player_id, ability_type, target)
+            result = await player_service.use_ability(game_id, player_id, ability_type)
             # О результате использования способности сервис сам разошлет уведомления через TimerManager
             # Можно также сразу подтвердить игроку
             await connection_manager.send_personal({
@@ -97,7 +94,7 @@ async def handle_client_message(
     elif msg_type == "get_game_state":
         # Отправить игроку актуальное состояние игры (зоны, игроки, эффекты)
         try:
-            state = await service.get_full_game_state(game_id, player_id)
+            state = await player_service.get_player_in_game(game_id, player_id)
             await connection_manager.send_personal({
                 "type": "game_state",
                 "data": state
@@ -125,13 +122,14 @@ def register_websocket_endpoint(app):
 
         try:
             # Проверяем, что игра существует и игрок в ней участвует
-            service = GameService(db)
-            game = await service.get_game(game_id)
+            game_service = GameService(db)
+            player_service = PlayerService(db)
+            game = await game_service.get_game(game_id)
             if game is None:
                 await websocket.close(code=4004, reason="Game not found")
                 return
 
-            player = await service.get_game_player(game_id, player_id)
+            player = await game_service.get_player_in_game(game_id, player_id)
             if player is None:
                 await websocket.close(code=4001, reason="Player not in game")
                 return
@@ -152,7 +150,7 @@ def register_websocket_endpoint(app):
             )
 
             # Отправить подключившемуся игроку начальное состояние игры
-            initial_state = await service.get_full_game_state(game_id, player_id)
+            initial_state = await game_service.get_player_in_game(game_id, player_id)
             await connection_manager.send_personal({
                 "type": "game_state",
                 "data": initial_state
@@ -163,7 +161,7 @@ def register_websocket_endpoint(app):
                 try:
                     raw_message = await websocket.receive_text()
                     message = json.loads(raw_message)
-                    await handle_client_message(game_id, player_id, message, db, service)
+                    await handle_client_message(game_id, player_id, message, db, player_service)
                 except json.JSONDecodeError:
                     await connection_manager.send_personal({
                         "type": "error",

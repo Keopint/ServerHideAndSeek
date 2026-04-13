@@ -1,15 +1,10 @@
 # tests/test_game_creation.py
 
-import pytest
 import uuid
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from main import app
-from models import Game, Player, Zone, GameStatus, PlayerRole, ZoneType
-from db import get_db
 
 # Тестовый клиент
 client = TestClient(app)
@@ -195,7 +190,7 @@ class TestCreateGameIntegration:
         # Например, создание временной БД SQLite в памяти
         from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
         from sqlalchemy.orm import sessionmaker
-        from models import Base
+        from database.models import Base
 
         # Создаем тестовую БД в памяти
         test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=True)

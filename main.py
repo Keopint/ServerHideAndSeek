@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from db import init_db
+from database.db import init_db
 from routes.gameRoutes import game_router
 from routes.infoRoutes import info_router
 from routes.websocketRoutes import register_websocket_endpoint
