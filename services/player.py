@@ -1,5 +1,6 @@
 import uuid
-from database.models import Game, Player, GameStatus, PlayerEffect, EffectType, AbilityType, PlayerAbility, Ability
+from database.models import (Game, Player, GameStatus, PlayerEffect,
+                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType)
 from sqlalchemy import select
 from datetime import datetime, timezone
 
@@ -138,7 +139,9 @@ class PlayerService(BaseService):
             self,
             game_id: uuid.UUID,
             player_id: uuid.UUID,
-            ability_type: AbilityType) -> int:
+            ability_type: AbilityType,
+            lat: float = None,
+            lng: float = None) -> int:
         player = self.get_player_in_game(game_id, player_id)
         stmt = select(PlayerAbility).join(Ability).where(
             PlayerAbility.player_id == player_id,
@@ -152,13 +155,15 @@ class PlayerService(BaseService):
         player_ability.number_uses_left -= 1
 
         if ability_type == AbilityType.SHIELD:
-            pass
+            player.shield_active = True
         elif ability_type == AbilityType.SCAN:
-            pass
+            player.scan_active = True
         elif ability_type == AbilityType.TRAP:
-            pass
+            zone_service = ZoneService(self.db)
+            await zone_service.create_zone(game_id, ZoneType.TRAP, lat, lng, player_id)
         elif ability_type == AbilityType.PERSONAL_BOMB:
-            pass
+            zone_service = ZoneService(self.db)
+            await zone_service.create_zone(game_id, ZoneType.PERSONAL_BOMB, lat, lng, player_id)
         elif ability_type == AbilityType.HOME_ALONE:
             pass
         elif ability_type == AbilityType.MANSION:

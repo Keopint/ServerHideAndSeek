@@ -37,6 +37,7 @@ class ZoneType(enum.Enum):
     TRAP = "TRAP"
     SNARE = "SNARE"
     DECOY = "DECOY"
+    PERSONAL_BOMB = "PERSONAL_BOMB"
 
 
 class AbilityType(enum.Enum):
@@ -173,7 +174,10 @@ class Ability(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     ability_type = Column(Enum(AbilityType), nullable=False)
-    data = Column(JSON, comment="additional parameters")
+    recharge_time = Column(Integer, nullable=False, comment="время перезарядки в секундах")
+    number_uses = Column(Integer, nullable=False, comment="количество использований")
+    duration_seconds = Column(Integer, default=None)
+    data = Column(JSON, comment="additional parameters", default=None)
 
     # Relationships
     roles = relationship(
@@ -249,9 +253,7 @@ class PlayerAbility(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
     ability_id = Column(UUID(as_uuid=True), ForeignKey("abilities.id"), nullable=False)
-    recharge_time = Column(Integer, nullable=False, comment="время перезарядки в секундах")
     number_uses_left = Column(Integer, nullable=False, comment="количество оставшихся использований")
-    data = Column(JSON, comment="ability information")
 
     # Relationships
     player = relationship("Player", back_populates="abilities")
@@ -318,6 +320,7 @@ class Player(Base):
     is_trapped = Column(Boolean, nullable=False, default=False)
     trapped_until = Column(DateTime, nullable=True)
     shield_active = Column(Boolean, nullable=False, default=False)
+    scan_active = Column(Boolean, nullable=False, default=False)
     player_data = Column(JSON, comment="additional attributes like inventory")
 
     # Relationships

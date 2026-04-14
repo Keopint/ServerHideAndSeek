@@ -1,0 +1,137 @@
+
+ШАБЛОН ДЛЯ СОЗДАНИЯ ИГРЫ
+
+{
+    "name": "Тестовая игра",
+    "center_lat": 55.751244,
+    "center_lng": 37.618423,
+    "safe_zone_radius": 500.0,
+    "min_zone_radius": 50.0,
+    "zone_shrink_interval": 120,
+    "game_duration": 1800,
+    "host_player": {
+        "host_name": "Keopint",
+        "host_player_location_lat": 20.0,
+        "host_player_location_lng": 20.0
+    },
+    "game_roles": ["Amogus", "Hunter", "Hider"],
+    "roles_abilities": {
+        "Amogus": {
+            "TRAP": {
+                "duration_seconds": 600,
+                "number_uses": 2,
+                "recharge_time": 60,
+                "addition_data": {
+                    "radius": 10.0,
+                    "trap_duration_seconds": 120
+                }
+            },
+            "SCAN": {
+                "duration_seconds": 600,
+                "number_uses": 2,
+                "recharge_time": 60,
+                "addition_data": {}
+            },
+        },
+        "Hunter": {
+            "PERSONAL_BOMB": {
+                "duration_seconds": 600,
+                "number_uses": 2,
+                "recharge_time": 60,
+                "addition_data": {
+                    "radius": 10.0,
+                    "damage": 100
+                }
+            }
+        },
+        "Hider": {
+            "SNARE": {
+                "duration_seconds": 600,
+                "addition_data": {
+                    "radius": 10.0,
+                    "trap_duration_seconds": 600
+                }
+            },
+        }
+    },
+    "roles_events": {
+        "Amogus": [],
+        "Hunter": [],
+        "Hider":[]
+    }
+}
+
+
+ШАБЛОНЫ ДЛЯ АБИЛОК:
+
+ "abilities_configurations": {
+    "SHIELD": {
+        "duration_seconds": 600,
+        "number_uses": 2,
+        "recharge_time": 60,
+        "addition_data": {}
+    },
+    "INTEL": {
+        "duration_seconds": 600,
+        "number_uses": 2,
+        "recharge_time": 60,
+        "addition_data": {}
+    },
+    "SCAN": {
+        "duration_seconds": 600,
+        "number_uses": 2,
+        "recharge_time": 60,
+        "addition_data": {}
+    },
+    "PERSONAL_BOMB": {
+            "duration_seconds": 600,
+            "number_uses": 2,
+            "recharge_time": 60,
+            "addition_data": {
+                "radius": 10.0,
+                "damage": 100
+            }
+        }
+    },
+    "TRAP": {
+        "duration_seconds": 600,
+        "number_uses": 2,
+        "recharge_time": 60,
+        "addition_data": {
+            "radius": 10.0,
+            "trap_duration_seconds": 120
+        }
+    },
+    "SNARE": {
+        "duration_seconds": 600,
+        "addition_data": {
+            "radius": 10.0,
+            "trap_duration_seconds": 600
+        }
+    },
+    "SAFE_HOUSE": {
+        "duration_seconds": 600,
+        "number_uses": 2,
+        "recharge_time": 60,
+        "addition_data": {
+            "radius": 20.0,
+        }
+    },
+    "SAFE_MANSION": {
+        "duration_seconds": 600,
+        "number_uses": 2,
+        "recharge_time": 60,
+        "addition_data": {
+            "radius": 30.0,
+        }
+    },
+}
+
+SHIELD - Щит
+INTEL - разведданные
+SCAN - сканирование местности
+PERSONAL_BOMB - персональная бомба
+SNARE - капкан
+TRAP - ловушка
+SAFE_HOUSE - Я в домике
+SAFE_MANSION - Я в особняке

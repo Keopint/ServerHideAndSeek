@@ -1,5 +1,5 @@
 import uuid
-from database.models import Game, Player, ZoneType, GameZone
+from database.models import Game, Player, ZoneType, GameZone, Zone
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 
@@ -18,22 +18,24 @@ class ZoneService(BaseService):
         zone_type: ZoneType,
         center_lat: float,
         center_lng: float,
-        radius: float,
-        duration_seconds: int,
         creator_id: uuid.UUID | None = None,
-        target_player_id: uuid.UUID | None = None,
-        single_use: bool = False
     ) -> GameZone:
         """Создаёт новую зону и планирует её завершение."""
         now = datetime.now(timezone.utc)
+
+        zone = select(Zone).where(
+            Zone.game_id == game_id,
+            Zone.type == zone_type
+        ).scalar_one_or_none()
+
         zone = GameZone(
             game_id=game_id,
             type=zone_type,
             center_lat=center_lat,
             center_lng=center_lng,
-            radius=radius,
+            radius=zone.radius,
             starts_at=now,
-            ends_at=now + timedelta(seconds=duration_seconds),
+            ends_at=now + timedelta(seconds=zone.duration_seconds),
             created_by=creator_id,
             is_active=True
         )

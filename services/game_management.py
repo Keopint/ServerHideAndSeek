@@ -48,15 +48,17 @@ class GameService(BaseService):
         self.db.add(game)
         await self.db.flush()
 
+        host_player_data = data.get("host_player", {})
+
         # 2. Создаем игрока-хоста (вода)
         host_player = Player(
             game_id=game.id,
-            name=data["host_name"],
+            name=host_player_data["host_name"],
             role=PlayerRole.seeker,
             health=100,
             is_alive=True,
-            location_lat=data["host_player_location_lat"],
-            location_lng=data["host_player_location_lng"],
+            location_lat=host_player_data["host_player_location_lat"],
+            location_lng=host_player_data["host_player_location_lng"],
             last_location_update=datetime.now(timezone.utc)
         )
 
@@ -66,7 +68,7 @@ class GameService(BaseService):
         # 3. Создаем начальную безопасную зону
         initial_zone = Zone(
             game_id=game.id,
-            type=ZoneType.safe,
+            type=ZoneType.SAFE,
             center_lat=data["center_lat"],
             center_lng=data["center_lng"],
             radius=data.get("safe_zone_radius", 500.0),
