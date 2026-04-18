@@ -54,10 +54,33 @@
             },
         }
     },
+    "events": ["BOMB", "AIRDROP", "BOMBARDMENT"],
     "roles_events": {
-        "Amogus": [],
-        "Hunter": [],
-        "Hider":[]
+        "Amogus": ["BOMB", "AIRDROP", "BOMBARDMENT"],
+        "Hunter": ["BOMB", "BOMBARDMENT"],
+        "Hider":["BOMB", "AIRDROP", "BOMBARDMENT"]
+    },
+    "events_configurations" {
+        "BOMB": {
+            "activation_frequency": "FREQUENT",
+            "addition_data": {
+                "radius": 10.0,
+                "damage": 100
+            }
+        },
+        "AIRDROP": {
+            "activation_frequency": "RARE",
+             "addition_data": {
+                "radius": 10.0
+            }
+        }
+        "BOMBARDMENT": {
+            "activation_frequency": "COMMON",
+             "addition_data": {
+                "radius": 5.0,
+                "damage": 50
+            }
+        }
     }
 }
 
@@ -135,3 +158,11 @@ SNARE - капкан
 TRAP - ловушка
 SAFE_HOUSE - Я в домике
 SAFE_MANSION - Я в особняке
+
+ШАБЛОН ПРИСОЕДИНЕНИЯ ИГРОКА
+
+{
+    "name" = "Igor",
+    "player_location_lat" = 20.0,
+    "player_location_lng" = 33.0
+}

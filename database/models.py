@@ -25,10 +25,8 @@ class EffectType(enum.Enum):
     SHIELD = "SHIELD"
     TRAPPED = "TRAPPED"
     ROOTED = "ROOTED"
-
-class EventType(enum.Enum):
-    bombordiro = "bombordiro"
-
+    INTEL = "INTEL"
+    SCAN = "SCAN"
 
 class ZoneType(enum.Enum):
     SAFE = "SAFE"
@@ -38,6 +36,8 @@ class ZoneType(enum.Enum):
     SNARE = "SNARE"
     DECOY = "DECOY"
     PERSONAL_BOMB = "PERSONAL_BOMB"
+    SAFE_HOUSE = "SAFE_HOUSE"
+    SAFE_MANSION = "SAFE_MANSION"
 
 
 class AbilityType(enum.Enum):
@@ -48,22 +48,19 @@ class AbilityType(enum.Enum):
     TRAP = "TRAP"
     SNARE = "SNARE"
     SAFE_HOUSE = "SAFE_HOUSE"
-    MANSION = "MANSION"
-    HOME_ALONE = "HOME_ALONE"
+    SAFE_MANSION = "SAFE_MANSION"
 
+class ActivationFrequencyType(enum.Enum):
+    FREQUENT = "FREQUENT"
+    COMMON = "COMMON"
+    RARE = "RARE"
 
 class EventType(enum.Enum):
-    bomb = "bomb"
-    airdop = "airdop"
-    bombardment = "bombardment"
-    comfort_zone = "comfort_zone"
-    reveal = "reveal"
-
-
-class PlayerRole(enum.Enum):
-    # Define based on your requirements
-    hider = "hider"
-    seeker = "seeker"
+    BOMB = "BOMB"
+    AIRDROP = "AIRDROP"
+    BOMBARDMENT = "BOMBARDMENT"
+    COMFORT_ZONE = "COMFORT_ZONE"
+    REVEAL = "REVEAL"
 
 
 # Association tables for many-to-many relationships
@@ -202,6 +199,7 @@ class GameZone(Base):
     ends_at = Column(DateTime(timezone=True))     # когда зона исчезает / срабатывает
     created_by = Column(UUID, ForeignKey("players.id"), nullable=True)  # если создана способностью
     is_active = Column(Boolean, default=True)
+    zone_data = Column(JSON, nullable=False, default={})
 
 
 class Effect(Base):
@@ -345,6 +343,7 @@ class Zone(Base):
     type = Column(Enum(ZoneType), nullable=False)
     radius = Column(Float, nullable=False)
     duration_seconds = Column(Integer, nullable=False)
+    zone_data = Column(JSON, nullable=False, default={})
 
     # Relationships
     game = relationship("Game", back_populates="zones", foreign_keys=[game_id])
@@ -383,7 +382,7 @@ class Event(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type = Column(Enum(EventType), nullable=False)
-    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
+    activation_frequency = Column(Enum(ActivationFrequencyType), nullable=False)
     event_data = Column(JSON, nullable=False, default={})
 
     # Relationships

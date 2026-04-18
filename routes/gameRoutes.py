@@ -6,6 +6,8 @@ from services.game_management import GameService
 from database.db import get_db
 from fastapi import APIRouter
 
+from services.player import PlayerService
+
 game_router = APIRouter()
 
 @game_router.api_route("/api/games/create", methods=["POST"])
@@ -33,7 +35,7 @@ async def create_game(
     """Добавить игрока в игру"""
     # Валидация обязательных полей
 
-    required_fields = ["name", "center_lat", "center_lng"]
+    required_fields = ["name", "player_location_lat", "player_location_lng"]
     for field in required_fields:
         if field not in data:
             raise HTTPException(
@@ -42,8 +44,8 @@ async def create_game(
             )
 
     # Валидация координат
-    center_lat = data["center_lat"]
-    center_lng = data["center_lng"]
+    center_lat = data["player_location_lat"]
+    center_lng = data["player_location_lng"]
     if not (-90 <= center_lat <= 90):
         raise HTTPException(status_code=422, detail="Invalid latitude")
     if not (-180 <= center_lng <= 180):

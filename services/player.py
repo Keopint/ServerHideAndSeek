@@ -1,11 +1,16 @@
 import uuid
+
+from starlette.websockets import WebSocket
+
 from database.models import (Game, Player, GameStatus, PlayerEffect,
                              EffectType, AbilityType, PlayerAbility, Ability, ZoneType)
 from sqlalchemy import select
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
+from timers import TimerType, timer_manager
 from utils.geo import calculate_distance, validate_coordinates
+from websocket_manager import connection_manager
 from zone import ZoneService
 
 
@@ -143,33 +148,86 @@ class PlayerService(BaseService):
             lat: float = None,
             lng: float = None) -> int:
         player = self.get_player_in_game(game_id, player_id)
-        stmt = select(PlayerAbility).join(Ability).where(
+        stmt = select(Ability).join(PlayerAbility).where(
             PlayerAbility.player_id == player_id,
             Ability.type == ability_type
         )
         result = await self.db.execute(stmt)
-        player_ability = result.scalar_one_or_none()
+        ability = result.scalar_one_or_none()
 
-        if player_ability.number_uses_left <= 0:
+        if ability.number_uses_left <= 0:
             raise ValueError(f"Player {player_id} has no more abilities {ability_type} left")
-        player_ability.number_uses_left -= 1
+
+        ability.number_uses_left -= 1
 
         if ability_type == AbilityType.SHIELD:
-            player.shield_active = True
+            await self.apply_effect(game_id, player_id, EffectType.SHIELD, ability.duration_seconds)
         elif ability_type == AbilityType.SCAN:
-            player.scan_active = True
+            await self.apply_effect(game_id, player_id, EffectType.INTEL, ability.duration_seconds)
         elif ability_type == AbilityType.TRAP:
             zone_service = ZoneService(self.db)
             await zone_service.create_zone(game_id, ZoneType.TRAP, lat, lng, player_id)
         elif ability_type == AbilityType.PERSONAL_BOMB:
             zone_service = ZoneService(self.db)
             await zone_service.create_zone(game_id, ZoneType.PERSONAL_BOMB, lat, lng, player_id)
-        elif ability_type == AbilityType.HOME_ALONE:
-            pass
-        elif ability_type == AbilityType.MANSION:
-            pass
-        elif ability_type == AbilityType.INTEL:
-            pass
         elif ability_type == AbilityType.SAFE_HOUSE:
-            pass
+            zone_service = ZoneService(self.db)
+            await zone_service.create_zone(game_id, ZoneType.SAFE_HOUSE, lat, lng, player_id)
+        elif ability_type == AbilityType.SAFE_MANSION:
+            zone_service = ZoneService(self.db)
+            await zone_service.create_zone(game_id, ZoneType.SAFE_MANSION, lat, lng, player_id)
+        elif ability_type == AbilityType.INTEL:
+            await self.handle_scan_effect(game_id, player_id, ability.duration_seconds, connection_manager)
+        elif ability_type == AbilityType.SAFE_HOUSE:
+            zone_service = ZoneService(self.db)
+            await zone_service.create_zone(game_id, ZoneType.SAFE_HOUSE, lat, lng, player_id)
         return 0
+
+    async def handle_scan_effect(self, game_id: uuid.UUID, player_id: uuid.UUID, duration: int, websocket: WebSocket):
+        await self.apply_effect(game_id, player_id, EffectType.SCAN, duration)
+        await websocket.send_json({
+            "type": "scan_activated",
+            "duration": duration,
+            "ends_at": (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+        })
+
+    async def apply_effect(self, game_id: uuid.UUID, player_id, effect_type: EffectType, duration_seconds: int):
+        now = datetime.now(timezone.utc)
+
+        new_player_effect = PlayerEffect(
+            player_id=player_id,
+            type=effect_type,
+            starts_at=now,
+            ends_at=now + timedelta(seconds=duration_seconds),
+            is_active=True
+        )
+
+        self.db.add(new_player_effect)
+        await self.db.flush()
+
+        timer_manager.schedule(
+            game_id=game_id,
+            entity_type=TimerType.EFFECT,
+            entity_id=new_player_effect.id,
+            end_time=new_player_effect.ends_at,
+            callback=lambda: self._on_effect_expired_callback(game_id, new_player_effect.id)
+        )
+
+    async def _on_effect_expired_callback(self, game_id: uuid.UUID, effect_id: uuid.UUID):
+        """Callback для таймера; создаёт новую сессию и вызывает обработчик."""
+        # Импортируем здесь, чтобы избежать циклических зависимостей
+        from database.db import get_db
+        async for db in get_db():
+            await self.handle_effect_expired(game_id, effect_id)
+            break
+
+
+    async def handle_effect_expired(self, game_id: uuid.UUID, effect_id: uuid.UUID):
+        """Обрабатывает истечение эффекта"""
+        effect = await self.db.get(PlayerEffect, effect_id)
+        if not effect:
+            return
+        effect.is_active = False
+        self.db.add(effect)
+
+        await self.db.commit()

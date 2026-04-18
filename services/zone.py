@@ -96,7 +96,7 @@ class ZoneService(BaseService):
         """Применяет эффект зоны к конкретному игроку."""
         if zone.type == ZoneType.DANGER:
             # Красная зона убивает, если нет щита
-            await player_service.apply_damage(player.id, damage=1000, ignore_shield=False)
+            await player_service.apply_damage(player.id, zone.data, ignore_shield=False)
         elif zone.type == ZoneType.WARNING:
             if zone.target_player_id == player.id:
                 await player_service.apply_damage(player.id, damage=1000, ignore_shield=False)

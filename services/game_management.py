@@ -1,9 +1,10 @@
 import uuid
 from fastapi import HTTPException
-from database.models import Game, Player, Role, game_roles, PlayerRole, ZoneType, Zone, Ability, role_abilities, role_events, \
-    Event, GameStatus
+from database.models import Game, Player, Role, game_roles, PlayerRole, ZoneType, Zone, Ability, role_abilities, \
+    role_events, \
+    Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType
 from sqlalchemy import select
-from typing import Any, Dict
+from typing import Any, Dict, Type, Coroutine
 from datetime import datetime, timezone
 
 from services.base import BaseService
@@ -12,144 +13,187 @@ from services.base import BaseService
 class GameService(BaseService):
 
     async def create_game(self, data: Dict[str, Any]):
-        # Валидация обязательных полей
-        required_fields = ["name", "host_name", "center_lat", "center_lng"]
-        for field in required_fields:
-            if field not in data:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Missing required field: {field}"
-                )
+        try:
+            # 1. Базовые параметры игры
+            name = data["name"]
+            center_lat = data["center_lat"]
+            center_lng = data["center_lng"]
+            safe_zone_radius = data.get("safe_zone_radius", 500.0)
+            min_zone_radius = data.get("min_zone_radius", 50.0)
+            zone_shrink_interval = data.get("zone_shrink_interval", 120)
+            game_duration = data.get("game_duration", 1800)
 
-        # Валидация координат
-        center_lat = data["center_lat"]
-        center_lng = data["center_lng"]
-        if not (-90 <= center_lat <= 90):
-            raise HTTPException(status_code=422, detail="Invalid latitude")
-        if not (-180 <= center_lng <= 180):
-            raise HTTPException(status_code=422, detail="Invalid longitude")
+            # 2. Информация о хосте
+            host_data = data["host_player"]
+            host_name = host_data["host_name"]
+            host_lat = host_data.get("host_player_location_lat", center_lat)
+            host_lng = host_data.get("host_player_location_lng", center_lng)
+            host_role_name = host_data.get("host_role")  # может отсутствовать
 
-        # Валидация радиуса
-        safe_zone_radius = data.get("safe_zone_radius", 500.0)
-        if safe_zone_radius < 100:
-            raise HTTPException(status_code=422, detail="Radius too small (min 100m)")
+            # 3. Списки ролей, способностей, событий
+            game_roles_list = data.get("game_roles", [])
+            roles_abilities = data.get("roles_abilities", {})
+            roles_events = data.get("roles_events", {})
+            events_configurations = data.get("events_configurations", {})
 
-        game = Game(
-            name=data["name"],
-            safe_zone_center_lat=data["center_lat"],
-            safe_zone_center_lng=data["center_lng"],
-            safe_zone_radius=data.get("safe_zone_radius", 500.0),
-            min_zone_radius=data.get("min_zone_radius", 50.0),
-            zone_shrink_interval=data.get("zone_shrink_interval", 120),
-            game_duration=data.get("game_duration", 1800),
-            last_shrink_at=datetime.now(timezone.utc)
-        )
+            if not game_roles_list:
+                raise ValueError("Не указаны роли для игры")
 
-        self.db.add(game)
-        await self.db.flush()
+            # Определяем роль хоста
+            if host_role_name is None:
+                host_role_name = game_roles_list[0]  # берём первую роль
 
-        host_player_data = data.get("host_player", {})
+            if host_role_name not in game_roles_list:
+                raise ValueError(f"Роль хоста '{host_role_name}' не найдена в списке ролей игры")
 
-        # 2. Создаем игрока-хоста (вода)
-        host_player = Player(
-            game_id=game.id,
-            name=host_player_data["host_name"],
-            role=PlayerRole.seeker,
-            health=100,
-            is_alive=True,
-            location_lat=host_player_data["host_player_location_lat"],
-            location_lng=host_player_data["host_player_location_lng"],
-            last_location_update=datetime.now(timezone.utc)
-        )
-
-        self.db.add(host_player)
-        await self.db.flush()
-
-        # 3. Создаем начальную безопасную зону
-        initial_zone = Zone(
-            game_id=game.id,
-            type=ZoneType.SAFE,
-            center_lat=data["center_lat"],
-            center_lng=data["center_lng"],
-            radius=data.get("safe_zone_radius", 500.0),
-            created_at=datetime.now(timezone.utc),
-            expires_at=None,
-            is_active=True
-        )
-
-        self.db.add(initial_zone)
-        await self.db.flush()
-
-        # 4. Связываем игру с текущей безопасной зоной
-        game.current_safe_zone_id = initial_zone.id
-
-        # 5. Добавляем способности (если есть)
-
-        roles_data = data.get("roles", [])
-        abilities_data = data.get("abilities", {})
-        events_data = data.get("events", {})
-
-        for role_name in roles_data:
-            # Создаём роль
-            new_role = Role(name=role_name)
-            self.db.add(new_role)
-            await self.db.flush()
-
-            # Связываем роль с игрой
-            await self.db.execute(
-                game_roles.insert().values(
-                    game_id=game.id,
-                    role_id=new_role.id
-                )
+            # 4. Создаём игру
+            game = Game(
+                name=name,
+                status=GameStatus.WAITING,
+                safe_zone_center_lat=center_lat,
+                safe_zone_center_lng=center_lng,
+                safe_zone_radius=safe_zone_radius,
+                min_zone_radius=min_zone_radius,
+                zone_shrink_interval=zone_shrink_interval,
+                game_duration=game_duration,
+                last_shrink_at=datetime.now(timezone.utc)
             )
+            self.db.add(game)
+            await self.db.flush()  # чтобы получить game.id
 
-            # Добавляем способности для роли
-            for ability_type in abilities_data.get(role_name, []):
-                result = await self.db.execute(
-                    select(Ability.id).where(Ability.ability_type == ability_type)
-                )
-                ability_id = result.scalar_one_or_none()
-                if ability_id:
-                    await self.db.execute(
-                        role_abilities.insert().values(
-                            role_id=new_role.id,
-                            ability_id=ability_id
-                        )
+            # 5. Создаём начальную безопасную зону
+            safe_zone = Zone(
+                game_id=game.id,
+                type=ZoneType.SAFE,
+                center_lat=center_lat,
+                center_lng=center_lng,
+                radius=safe_zone_radius,
+                created_at=datetime.now(timezone.utc),
+                is_active=True
+            )
+            self.db.add(safe_zone)
+            await self.db.flush()
+            game.current_safe_zone_id = safe_zone.id
+
+            # 7. Обрабатываем роли
+            role_objects = {}  # name -> Role
+            for role_name in game_roles_list:
+                # Находим или создаём роль
+                stmt = select(Role).where(Role.game_id == game.id,
+                                          Role.name == role_name)
+                role = (await self.db.execute(stmt)).scalar_one_or_none()
+                if not role:
+                    role = Role(name=role_name)
+                    self.db.add(role)
+                    await self.db.flush()
+                role_objects[role_name] = role
+
+                # Связываем роль с игрой
+                await self.db.execute(
+                    game_roles.insert().values(
+                        game_id=game.id,
+                        role_id=role.id
                     )
-
-            # Добавляем события для роли
-            for event_type in events_data.get(role_name, []):
-                result = await self.db.execute(
-                    select(Event.id).where(Event.type == event_type)
                 )
-                event_id = result.scalar_one_or_none()
-                if event_id:
+
+            for event_type, event_data in events_configurations.items():
+                event_enum = EventType(event_type)
+                activation_frequency_type = ActivationFrequencyType(event_data["activation_frequency"])
+                new_event = Event(
+                    type = event_enum,
+                    activation_frequency = activation_frequency_type,
+                    event_data = event_data.get("addition_data", {})
+                )
+                self.db.add(new_event)
+                await self.db.flush()
+
+                for role_name, events_list in roles_events.items():
+                    stmt = select(Role).where(Role.game_id == game.id,
+                                              Role.name == role_name)
+                    role = (await self.db.execute(stmt)).scalar_one_or_none()
                     await self.db.execute(
                         role_events.insert().values(
-                            role_id=new_role.id,
-                            event_id=event_id
+                            role_id=role.id,
+                            event_id=new_event.id
                         )
                     )
 
-    async def get_game(self, game_id: uuid.UUID) -> Game:
+            host_player = Player(
+                game_id=game.id,
+                name=host_name,
+                role_id = select(Role.id)
+                    .join(game_roles, Role.id == game_roles.c.role_id)
+                    .where(game_roles.c.game_id == game.id)
+                    .where(Role.name == host_role_name).scalar_one_or_none(),
+                health=100,
+                is_alive=True,
+                location_lat=host_lat,
+                location_lng=host_lng,
+                last_location_update=datetime.now(timezone.utc)
+            )
+
+            self.db.add(host_player)
+            await self.db.flush()
+
+            # 8. Обрабатываем способности для каждой роли
+            for role_name, abilities_dict in roles_abilities.items():
+                role = role_objects.get(role_name)
+                if not role:
+                    continue
+
+                for ability_type_str, ability_params in abilities_dict.items():
+                    # Приводим к нижнему регистру для enum
+                    ability_type_clean = ability_type_str.upper()
+                    try:
+                        ability_enum = AbilityType(ability_type_clean)
+                    except ValueError:
+                        raise ValueError(f"Неизвестный тип способности: {ability_type_str}")
+
+                    ability = Ability(
+                        ability_type=ability_enum,
+                        number_uses=ability_params["number_uses"],
+                        recharge_time=ability_params["recharge_time"],
+                        data=ability_params["addition_data"]
+                    )
+
+                    self.db.add(ability)
+                    await self.db.flush()
+
+                    # Связываем роль со способностью
+                    await self.db.execute(
+                        role_abilities.insert().values(
+                            role_id=role.id,
+                            ability_id=ability.id
+                        )
+                    )
+
+                    # Если эта роль принадлежит хосту, даём ему эту способность
+                    if role_name == host_role_name:
+                        player_ability = PlayerAbility(
+                            player_id=host_player.id,
+                            ability_id=ability.id,
+                            recharge_time=ability_params.get("recharge_time", 0),
+                            number_uses_left=ability_params.get("number_uses", 1),
+                            data=ability_params.get("addition_data", {})
+                        )
+                        self.db.add(player_ability)
+
+            # 10. Фиксируем все изменения
+            await self.db.commit()
+            await self.db.refresh(game)
+            return game
+
+        except Exception as e:
+            await self.db.rollback()
+            raise ValueError(f"Ошибка при создании игры: {str(e)}")
+
+    async def get_game(self, game_id: uuid.UUID) -> Type[Game]:
         """Получить игру или выбросить исключение"""
 
         game = await self.db.get(Game, game_id)
         if not game:
             raise ValueError(f"Game with id {game_id} not found")
         return game
-
-    async def get_players_in_game(self, game_id: uuid.UUID) -> list[Player]:
-        """
-        Получить список всех игроков в игре
-        """
-        players = await self.db.execute(
-            select(Player).where(
-                Player.game_id == game_id,
-            )
-        ).scalars().all()
-
-        return players
 
     async def add_player(self, game_id: uuid.UUID, data: Dict[str, Any]):
         game = await self.db.get(Game, game_id)
@@ -182,6 +226,6 @@ class GameService(BaseService):
             Player.id == player_id,
             Player.game_id == game_id
         )
-        result = await self.db.execute(stmt).scalar_one_or_none()
+        result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 

@@ -47,6 +47,35 @@ class ConnectionManager:
                 del self._game_players[game_key]
         print(f"[WS] Player {player_key} disconnected")
 
+    async def broadcast_to_game(
+            self,
+            game_id: uuid.UUID,
+            message: Any,
+            exclude_player: Optional[uuid.UUID] = None
+    ) -> None:
+        """
+        Отправить сообщение всем игрокам в игре, кроме указанного (опционально).
+        """
+        game_key = str(game_id)
+        if game_key not in self._game_connections:
+            return
+
+        exclude_key = str(exclude_player) if exclude_player else None
+        # Создаём копию словаря, чтобы избежать изменения во время итерации
+        connections = self._game_connections[game_key].copy()
+        for player_key, ws in connections.items():
+            if exclude_key is not None and player_key == exclude_key:
+                continue
+            try:
+                if isinstance(message, dict):
+                    await ws.send_json(message)
+                else:
+                    await ws.send_text(str(message))
+            except Exception as e:
+                print(f"[WS] Broadcast failed to {player_key}: {e}")
+                # Опционально: можно удалить проблемное соединение
+                self.disconnect(uuid.UUID(player_key))
+
     async def send_personal(self, message: Any, player_id: uuid.UUID) -> bool:
         """Отправить сообщение конкретному игроку."""
         player_key = str(player_id)
