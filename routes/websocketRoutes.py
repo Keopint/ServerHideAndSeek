@@ -22,13 +22,13 @@ async def handle_client_message(
     game_id: uuid.UUID,
     player_id: uuid.UUID,
     message: dict,
-    db: AsyncSession,
-    player_service: PlayerService
+    db: AsyncSession
 ):
     """Обработчик входящих сообщений от клиента."""
 
     msg_type = message.get("type")
     data = message.get("data", {})
+    player_service = PlayerService(db)
 
     if msg_type == "ping":
         # Ответить pong с серверным временем
@@ -123,7 +123,6 @@ def register_websocket_endpoint(app):
         try:
             # Проверяем, что игра существует и игрок в ней участвует
             game_service = GameService(db)
-            player_service = PlayerService(db)
             game = await game_service.get_game(game_id)
             if game is None:
                 await websocket.close(code=4004, reason="Game not found")
@@ -161,7 +160,7 @@ def register_websocket_endpoint(app):
                 try:
                     raw_message = await websocket.receive_text()
                     message = json.loads(raw_message)
-                    await handle_client_message(game_id, player_id, message, db, player_service)
+                    await handle_client_message(game_id, player_id, message, db)
                 except json.JSONDecodeError:
                     await connection_manager.send_personal({
                         "type": "error",

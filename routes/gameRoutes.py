@@ -18,7 +18,8 @@ async def create_game(
     """Создать новую игру"""
     try:
         service = GameService(db)
-        await service.create_game(data)
+        game = await service.create_game(data)
+        return game
     except HTTPException:
         raise
     except Exception as e:
@@ -27,7 +28,7 @@ async def create_game(
 
 
 @game_router.api_route("/api/games/{game_id}/connect_player", methods=["POST"])
-async def create_game(
+async def connect_player(
         game_id: uuid.UUID,
         data: Dict[str, Any],
         db: AsyncSession = Depends(get_db)

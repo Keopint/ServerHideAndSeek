@@ -6,12 +6,11 @@ from database.models import (Game, Player, GameStatus, PlayerEffect,
                              EffectType, AbilityType, PlayerAbility, Ability, ZoneType)
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
-
+from services.zone import ZoneService
 from services.base import BaseService
 from timers import TimerType, timer_manager
 from utils.geo import calculate_distance, validate_coordinates
 from websocket_manager import connection_manager
-from zone import ZoneService
 
 
 class PlayerService(BaseService):
@@ -146,50 +145,122 @@ class PlayerService(BaseService):
             player_id: uuid.UUID,
             ability_type: AbilityType,
             lat: float = None,
-            lng: float = None) -> int:
+            lng: float = None, ability_id=None) -> int:
+
         player = self.get_player_in_game(game_id, player_id)
+
         stmt = select(Ability).join(PlayerAbility).where(
             PlayerAbility.player_id == player_id,
             Ability.type == ability_type
         )
+
         result = await self.db.execute(stmt)
         ability = result.scalar_one_or_none()
 
-        if ability.number_uses_left <= 0:
+        stmt = select(PlayerAbility).where(
+            PlayerAbility.player_id == player_id,
+            ability_id == ability.id
+        )
+
+        result = await self.db.execute(stmt)
+        player_ability = result.scalar_one_or_none()
+
+        if player_ability.number_uses_left <= 0:
             raise ValueError(f"Player {player_id} has no more abilities {ability_type} left")
 
-        ability.number_uses_left -= 1
+        player_ability.number_uses_left -= 1
 
         if ability_type == AbilityType.SHIELD:
-            await self.apply_effect(game_id, player_id, EffectType.SHIELD, ability.duration_seconds)
+            await self.apply_effect(
+                game_id,
+                player_id,
+                EffectType.SHIELD,
+                ability.duration_seconds
+            )
         elif ability_type == AbilityType.SCAN:
-            await self.apply_effect(game_id, player_id, EffectType.INTEL, ability.duration_seconds)
+            await self.apply_effect(
+                game_id,
+                player_id,
+                EffectType.INTEL,
+                ability.duration_seconds
+            )
         elif ability_type == AbilityType.TRAP:
             zone_service = ZoneService(self.db)
-            await zone_service.create_zone(game_id, ZoneType.TRAP, lat, lng, player_id)
+            await zone_service.create_zone(
+                game_id,
+                ZoneType.TRAP,
+                lat,
+                lng,
+                ability.duration_seconds,
+                ability.data.get("radius"),
+                ability.data.get("damage"),
+                player_id
+            )
         elif ability_type == AbilityType.PERSONAL_BOMB:
             zone_service = ZoneService(self.db)
-            await zone_service.create_zone(game_id, ZoneType.PERSONAL_BOMB, lat, lng, player_id)
+            await zone_service.create_zone(
+                game_id,
+                ZoneType.DANGER,
+                lat,
+                lng,
+                ability.duration_seconds,
+                ability.data.get("radius"),
+                ability.data.get("damage"),
+                player_id
+            )
         elif ability_type == AbilityType.SAFE_HOUSE:
             zone_service = ZoneService(self.db)
-            await zone_service.create_zone(game_id, ZoneType.SAFE_HOUSE, lat, lng, player_id)
+            await zone_service.create_zone(
+                game_id,
+                ZoneType.SAFE_HOUSE,
+                lat,
+                lng,
+                ability.duration_seconds,
+                ability.data.get("radius"),
+                ability.data.get("damage"),
+                player_id
+            )
         elif ability_type == AbilityType.SAFE_MANSION:
             zone_service = ZoneService(self.db)
-            await zone_service.create_zone(game_id, ZoneType.SAFE_MANSION, lat, lng, player_id)
+            await zone_service.create_zone(
+                game_id,
+                ZoneType.SAFE_MANSION,
+                lat,
+                lng,
+                ability.duration_seconds,
+                ability.data.get("radius"),
+                ability.data.get("damage"),
+                player_id
+            )
         elif ability_type == AbilityType.INTEL:
-            await self.handle_scan_effect(game_id, player_id, ability.duration_seconds, connection_manager)
+            await self.handle_scan_effect(
+                game_id,
+                player_id,
+                ability.duration_seconds
+            )
         elif ability_type == AbilityType.SAFE_HOUSE:
             zone_service = ZoneService(self.db)
-            await zone_service.create_zone(game_id, ZoneType.SAFE_HOUSE, lat, lng, player_id)
+            await zone_service.create_zone(
+                game_id,
+                ZoneType.SAFE_HOUSE,
+                lat,
+                lng,
+                ability.duration_seconds,
+                ability.data.get("radius"),
+                ability.data.get("damage"),
+                player_id
+            )
         return 0
 
-    async def handle_scan_effect(self, game_id: uuid.UUID, player_id: uuid.UUID, duration: int, websocket: WebSocket):
+    async def handle_scan_effect(self, game_id: uuid.UUID, player_id: uuid.UUID, duration: int):
         await self.apply_effect(game_id, player_id, EffectType.SCAN, duration)
-        await websocket.send_json({
-            "type": "scan_activated",
-            "duration": duration,
-            "ends_at": (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
-        })
+        await connection_manager.send_personal({
+                "type": "scan_activated",
+                "duration": duration,
+                "ends_at": (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+            },
+            player_id
+        )
 
     async def apply_effect(self, game_id: uuid.UUID, player_id, effect_type: EffectType, duration_seconds: int):
         now = datetime.now(timezone.utc)

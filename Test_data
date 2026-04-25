@@ -31,7 +31,7 @@
                 "number_uses": 2,
                 "recharge_time": 60,
                 "addition_data": {}
-            },
+            }
         },
         "Hunter": {
             "PERSONAL_BOMB": {
@@ -47,36 +47,40 @@
         "Hider": {
             "SNARE": {
                 "duration_seconds": 600,
+                "number_uses": 2,
+                "recharge_time": 60,
                 "addition_data": {
                     "radius": 10.0,
                     "trap_duration_seconds": 600
                 }
-            },
+            }
         }
     },
     "events": ["BOMB", "AIRDROP", "BOMBARDMENT"],
     "roles_events": {
         "Amogus": ["BOMB", "AIRDROP", "BOMBARDMENT"],
         "Hunter": ["BOMB", "BOMBARDMENT"],
-        "Hider":["BOMB", "AIRDROP", "BOMBARDMENT"]
+        "Hider": ["BOMB", "AIRDROP", "BOMBARDMENT"]
     },
-    "events_configurations" {
+    "events_configurations": {
         "BOMB": {
             "activation_frequency": "FREQUENT",
             "addition_data": {
+                "duration_seconds": 600,
                 "radius": 10.0,
                 "damage": 100
             }
         },
         "AIRDROP": {
             "activation_frequency": "RARE",
-             "addition_data": {
+            "addition_data": {
                 "radius": 10.0
             }
-        }
+        },
         "BOMBARDMENT": {
             "activation_frequency": "COMMON",
-             "addition_data": {
+            "addition_data": {
+                "duration_seconds": 600,
                 "radius": 5.0,
                 "damage": 50
             }
@@ -150,6 +154,37 @@
     },
 }
 
+
+
+ШАБЛОНЫ ДЛЯ СОБЫТИЙ:
+{
+    "BOMB": {
+        "activation_frequency": "FREQUENT",
+        "addition_data": {
+            "duration_seconds": 600,
+            "radius": 10.0,
+            "damage": 100
+        }
+    },
+    "AIRDROP": {
+        "activation_frequency": "RARE",
+        "addition_data": {
+            "radius": 10.0
+        }
+    },
+    "BOMBARDMENT": {
+        "activation_frequency": "COMMON",
+        "addition_data": {
+            "duration_seconds": 600,
+            "radius": 5.0,
+            "damage": 50
+        }
+    }
+}
+
+
+РАСШИФРОВКА АБИЛОК
+
 SHIELD - Щит
 INTEL - разведданные
 SCAN - сканирование местности
@@ -159,10 +194,45 @@ TRAP - ловушка
 SAFE_HOUSE - Я в домике
 SAFE_MANSION - Я в особняке
 
+
+
 ШАБЛОН ПРИСОЕДИНЕНИЯ ИГРОКА
 
 {
     "name" = "Igor",
     "player_location_lat" = 20.0,
     "player_location_lng" = 33.0
+}
+
+
+
+ВЕБСОКЕТ ЗАПРОСЫ
+
+ping - проверка связи
+{
+    "type": "ping",
+    "data": {}
+}
+
+update_location - обновление геолокации
+{
+    "type": "update_location",
+    "data": {
+        "lat": 20.2443,
+        "lng": 33.2453
+    }
+}
+
+use_ability - использование способности
+{
+    "type": "use_ability",
+    "data": {
+        "ability_type": "PERSONAL_BOMB"
+    }
+}
+
+get_game_state - запрос полного состояния игры
+{
+    "type": "get_game_state",
+    "data": {}
 }

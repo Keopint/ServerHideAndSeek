@@ -1,11 +1,11 @@
 import uuid
 from fastapi import HTTPException
-from database.models import Game, Player, Role, game_roles, PlayerRole, ZoneType, Zone, Ability, role_abilities, \
+from database.models import Game, Player, Role, game_roles, ZoneType, Zone, Ability, role_abilities, \
     role_events, \
-    Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType
+    Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType, GameZone
 from sqlalchemy import select
 from typing import Any, Dict, Type, Coroutine
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
 
@@ -22,6 +22,7 @@ class GameService(BaseService):
             min_zone_radius = data.get("min_zone_radius", 50.0)
             zone_shrink_interval = data.get("zone_shrink_interval", 120)
             game_duration = data.get("game_duration", 1800)
+            zone_boundary_damage = data.get("zone_boundary_damage", 1)
 
             # 2. Информация о хосте
             host_data = data["host_player"]
@@ -56,19 +57,22 @@ class GameService(BaseService):
                 min_zone_radius=min_zone_radius,
                 zone_shrink_interval=zone_shrink_interval,
                 game_duration=game_duration,
-                last_shrink_at=datetime.now(timezone.utc)
+                last_shrink_at=datetime.now(timezone.utc),
+                zone_boundary_damage=zone_boundary_damage
             )
             self.db.add(game)
             await self.db.flush()  # чтобы получить game.id
 
             # 5. Создаём начальную безопасную зону
-            safe_zone = Zone(
+            now = datetime.now(timezone.utc)
+            safe_zone = GameZone(
                 game_id=game.id,
                 type=ZoneType.SAFE,
                 center_lat=center_lat,
                 center_lng=center_lng,
                 radius=safe_zone_radius,
-                created_at=datetime.now(timezone.utc),
+                starts_at=now,
+                ends_at=now + timedelta(seconds=game_duration),
                 is_active=True
             )
             self.db.add(safe_zone)
@@ -78,14 +82,9 @@ class GameService(BaseService):
             # 7. Обрабатываем роли
             role_objects = {}  # name -> Role
             for role_name in game_roles_list:
-                # Находим или создаём роль
-                stmt = select(Role).where(Role.game_id == game.id,
-                                          Role.name == role_name)
-                role = (await self.db.execute(stmt)).scalar_one_or_none()
-                if not role:
-                    role = Role(name=role_name)
-                    self.db.add(role)
-                    await self.db.flush()
+                role = Role(name=role_name)
+                self.db.add(role)
+                await self.db.flush()
                 role_objects[role_name] = role
 
                 # Связываем роль с игрой
@@ -108,8 +107,10 @@ class GameService(BaseService):
                 await self.db.flush()
 
                 for role_name, events_list in roles_events.items():
-                    stmt = select(Role).where(Role.game_id == game.id,
-                                              Role.name == role_name)
+                    stmt = select(Role).join(game_roles, Role.id == game_roles.c.role_id).where(
+                        game_roles.c.game_id == game.id,
+                        Role.name == role_name
+                    )
                     role = (await self.db.execute(stmt)).scalar_one_or_none()
                     await self.db.execute(
                         role_events.insert().values(
@@ -117,14 +118,15 @@ class GameService(BaseService):
                             event_id=new_event.id
                         )
                     )
+            stmt = (select(Role.id).join(game_roles, Role.id == game_roles.c.role_id)
+                    .where(game_roles.c.game_id == game.id)
+                    .where(Role.name == host_role_name))
+            role_id = (await self.db.execute(stmt)).scalar_one_or_none()
 
             host_player = Player(
                 game_id=game.id,
                 name=host_name,
-                role_id = select(Role.id)
-                    .join(game_roles, Role.id == game_roles.c.role_id)
-                    .where(game_roles.c.game_id == game.id)
-                    .where(Role.name == host_role_name).scalar_one_or_none(),
+                role_id = role_id,
                 health=100,
                 is_alive=True,
                 location_lat=host_lat,
@@ -172,9 +174,7 @@ class GameService(BaseService):
                         player_ability = PlayerAbility(
                             player_id=host_player.id,
                             ability_id=ability.id,
-                            recharge_time=ability_params.get("recharge_time", 0),
                             number_uses_left=ability_params.get("number_uses", 1),
-                            data=ability_params.get("addition_data", {})
                         )
                         self.db.add(player_ability)
 

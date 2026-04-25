@@ -5,7 +5,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
-from geoalchemy2 import Geometry
 from datetime import datetime
 import uuid
 from sqlalchemy.orm import validates
@@ -32,13 +31,20 @@ class ZoneType(enum.Enum):
     SAFE = "SAFE"
     DANGER = "DANGER"
     WARNING = "WARNING"
+    AIRDROP = "AIRDROP"
     TRAP = "TRAP"
     SNARE = "SNARE"
-    DECOY = "DECOY"
-    PERSONAL_BOMB = "PERSONAL_BOMB"
     SAFE_HOUSE = "SAFE_HOUSE"
     SAFE_MANSION = "SAFE_MANSION"
 
+# SAFE - начальная зона
+# DANGER - красная зона (бомба)
+# WARNING - оранжевая зона (бомбардировка)
+# AIRDROP - аирдроп
+# SNARE - капкан
+# TRAP - ловушка
+# SAFE_HOUSE - Я в домике
+# SAFE_MANSION - Я в особняке
 
 class AbilityType(enum.Enum):
     SHIELD = "SHIELD"
@@ -59,8 +65,12 @@ class EventType(enum.Enum):
     BOMB = "BOMB"
     AIRDROP = "AIRDROP"
     BOMBARDMENT = "BOMBARDMENT"
-    COMFORT_ZONE = "COMFORT_ZONE"
     REVEAL = "REVEAL"
+
+# BOMB - бомба (красная зона в рандомном месте)
+# AIRDROP - аирдроп (желтая зона в рандомном месте)
+# BOMBARDMENT - бомбардировка (много ораньжевых зон в разных местах карты)
+# REVEAL - подсветка всех игроков (игроки видят геолокации друг-друга)
 
 
 # Association tables for many-to-many relationships
@@ -191,10 +201,11 @@ class GameZone(Base):
 
     id = Column(UUID, primary_key=True, default=uuid.uuid4)
     game_id = Column(UUID, ForeignKey("games.id"))
-    type = Column(Enum(ZoneType))        # red, orange, green, gray, black
-    center_lat = Column(Float)
-    center_lng = Column(Float)
-    radius = Column(Float)
+    type = Column(Enum(ZoneType))
+    center_lat = Column(Float, nullable=False)
+    center_lng = Column(Float, nullable=False)
+    radius = Column(Float, nullable=False)
+    damage = Column(Integer, default=0)
     starts_at = Column(DateTime(timezone=True))   # когда зона появляется
     ends_at = Column(DateTime(timezone=True))     # когда зона исчезает / срабатывает
     created_by = Column(UUID, ForeignKey("players.id"), nullable=True)  # если создана способностью
@@ -242,7 +253,6 @@ class GameEvent(Base):
     event_type = Column(Enum(EventType))
     starts_at = Column(DateTime(timezone=True))
     ends_at = Column(DateTime(timezone=True), nullable=True)
-    payload = Column(JSON, nullable=True)
 
 
 class PlayerAbility(Base):
@@ -271,7 +281,7 @@ class Game(Base):
     min_zone_radius = Column(Float, nullable=False, default=50.0)
     zone_shrink_interval = Column(Integer, nullable=False, default=120)
     game_duration = Column(Integer, nullable=False, default=1800)
-    zone_boundary_damage = Column(Integer, nullable=False, default=1),
+    zone_boundary_damage = Column(Integer, nullable=False, default=1)
     current_safe_zone_id = Column(UUID(as_uuid=True), ForeignKey("zones.id"),
                                   comment="optional, references active safe zone")
     last_shrink_at = Column(DateTime, comment="last time when zone was active")
@@ -332,29 +342,28 @@ class Player(Base):
         foreign_keys="UsedAbility.target_player_id"
     )
     role_ref = relationship("Role")
-    created_zones = relationship("Zone", back_populates="owner", foreign_keys="Zone.owner_id")
 
 
-class Zone(Base):
-    __tablename__ = "zones"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
-    type = Column(Enum(ZoneType), nullable=False)
-    radius = Column(Float, nullable=False)
-    duration_seconds = Column(Integer, nullable=False)
-    zone_data = Column(JSON, nullable=False, default={})
-
-    # Relationships
-    game = relationship("Game", back_populates="zones", foreign_keys=[game_id])
-
-    @validates("duration_seconds")
-    def _validate_population(self, key, duration_seconds):
-        if not duration_seconds:
-            return duration_seconds
-        if duration_seconds < 0 or duration_seconds > 1000000:
-            raise ValueError(f"Недопустимое значение для duration_seconds: {duration_seconds}")
-        return duration_seconds
+# class Zone(Base):
+#     __tablename__ = "zones"
+#
+#     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+#     game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+#     type = Column(Enum(ZoneType), nullable=False)
+#     radius = Column(Float, nullable=False)
+#     duration_seconds = Column(Integer, nullable=False)
+#     zone_data = Column(JSON, nullable=False, default={})
+#
+#     # Relationships
+#     game = relationship("Game", back_populates="zones", foreign_keys=[game_id])
+#
+#     @validates("duration_seconds")
+#     def _validate_population(self, key, duration_seconds):
+#         if not duration_seconds:
+#             return duration_seconds
+#         if duration_seconds < 0 or duration_seconds > 1000000:
+#             raise ValueError(f"Недопустимое значение для duration_seconds: {duration_seconds}")
+#         return duration_seconds
 
 
 class UsedAbility(Base):

@@ -1,12 +1,12 @@
 import uuid
-from database.models import Game, Player, ZoneType, GameZone, Zone
+from database.models import Game, Player, ZoneType, GameZone
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
+from services.player import PlayerService
 from timers import timer_manager, TimerType
 from utils.geo import is_point_in_circle
-from services.player import PlayerService
 
 
 class ZoneService(BaseService):
@@ -18,24 +18,23 @@ class ZoneService(BaseService):
         zone_type: ZoneType,
         center_lat: float,
         center_lng: float,
+        duration_seconds: int,
+        radius: float,
+        damage: int | None = None,
         creator_id: uuid.UUID | None = None,
     ) -> GameZone:
         """Создаёт новую зону и планирует её завершение."""
         now = datetime.now(timezone.utc)
-
-        zone = select(Zone).where(
-            Zone.game_id == game_id,
-            Zone.type == zone_type
-        ).scalar_one_or_none()
 
         zone = GameZone(
             game_id=game_id,
             type=zone_type,
             center_lat=center_lat,
             center_lng=center_lng,
-            radius=zone.radius,
+            radius=radius,
             starts_at=now,
-            ends_at=now + timedelta(seconds=zone.duration_seconds),
+            ends_at=now + timedelta(seconds=duration_seconds),
+            damage=damage,
             created_by=creator_id,
             is_active=True
         )
@@ -96,13 +95,13 @@ class ZoneService(BaseService):
         """Применяет эффект зоны к конкретному игроку."""
         if zone.type == ZoneType.DANGER:
             # Красная зона убивает, если нет щита
-            await player_service.apply_damage(player.id, zone.data, ignore_shield=False)
+            await player_service.apply_damage(player.id, zone.get("damage", 100), ignore_shield=False)
         elif zone.type == ZoneType.WARNING:
             if zone.target_player_id == player.id:
-                await player_service.apply_damage(player.id, damage=1000, ignore_shield=False)
+                await player_service.apply_damage(player.id, zone.get("damage", 50), ignore_shield=False)
         elif zone.type in (ZoneType.TRAP, ZoneType.SNARE):
             # Капкан или ловушка — накладываем эффект обездвиживания
-            trap_duration = 60 if zone.type == ZoneType.TRAP else 600
+            trap_duration = zone.zone_data.get("trap_duration_seconds")
             from services.effect import EffectService
             effect_service = EffectService(self.db)
             await effect_service.apply_trapped_effect(
