@@ -4,7 +4,7 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-
+from database.models import GameStatus
 from database.db import get_db
 from services.player import PlayerService
 from services.game_management import GameService
@@ -15,6 +15,9 @@ CLIENT_MESSAGE_TYPES = {
     "ping",                 # проверка связи
     "update_location",      # обновление геопозиции
     "use_ability",          # использование способности
+    "change_role",          # запрос на изменение роли
+    "change_ready_status",  # запрос на изменение статуса готовности
+    "get_out_of_the_game",  # запрос на выбывание из игры
     "get_game_state",       # запрос полного состояния игры
 }
 
@@ -37,6 +40,40 @@ async def handle_client_message(
             "server_time": datetime.now(timezone.utc).isoformat()
         }, player_id)
 
+    elif msg_type == "change_role":
+        new_role_id = data.get("role_id")
+        if new_role_id is None:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": "Missing role_id"
+            }, player_id)
+            return
+        try:
+            await player_service.change_player_role(game_id, player_id, new_role_id)
+            await db.commit()
+        except ValueError as e:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": str(e)
+            }, player_id)
+
+    elif msg_type == "change_ready_status":
+        new_status = data.get("status", False)
+        if new_status is None:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": "Missing new_status"
+            }, player_id)
+            return
+        try:
+            await player_service.change_ready_status(game_id, player_id, new_status)
+            await db.commit()
+        except ValueError as e:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": str(e)
+            }, player_id)
+
     elif msg_type == "update_location":
         lat = data.get("lat")
         lng = data.get("lng")
@@ -50,6 +87,7 @@ async def handle_client_message(
         # Обновить позицию игрока через сервис
         try:
             await player_service.update_player_location(game_id, player_id, lat, lng)
+            await db.commit()
             # Оповестить всех игроков в игре об изменении локации (кроме отправителя)
             await connection_manager.broadcast_to_game(
                 game_id,
@@ -68,6 +106,17 @@ async def handle_client_message(
             }, player_id)
 
     elif msg_type == "use_ability":
+        game_service = GameService(db)
+        game_status = game_service.get_status(game_id)
+
+        # Проверяем, активна ли игра
+        if game_status != GameStatus.ACTIVE:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": "Game is not active!"
+            }, player_id)
+            return
+
         ability_type = data.get("ability_type")
         if not ability_type:
             await connection_manager.send_personal({
@@ -78,6 +127,7 @@ async def handle_client_message(
 
         try:
             result = await player_service.use_ability(game_id, player_id, ability_type)
+            await db.commit()
             # О результате использования способности сервис сам разошлет уведомления через TimerManager
             # Можно также сразу подтвердить игроку
             await connection_manager.send_personal({

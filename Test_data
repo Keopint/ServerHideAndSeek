@@ -14,7 +14,20 @@
         "host_player_location_lat": 20.0,
         "host_player_location_lng": 20.0
     },
-    "game_roles": ["Amogus", "Hunter", "Hider"],
+    "game_roles": {
+        "Amogus": {
+            "health": 200,
+            "victory_condition": "SEEKER"
+        },
+        "Hunter": {
+            "health": 100,
+            "victory_condition": "SEEKER"
+        },
+        "Hider": {
+            "health": 100,
+            "victory_condition": "HIDER"
+        }
+    },
     "roles_abilities": {
         "Amogus": {
             "TRAP": {
@@ -86,6 +99,11 @@
             }
         }
     }
+}
+
+Возврат:
+{
+
 }
 
 
@@ -196,17 +214,25 @@ SAFE_MANSION - Я в особняке
 
 
 
+ВИДЫ УСЛОВИЙ ПОБЕДЫ (на данный момент их два и больше не планируется до презентации проекта)
+HIDER - прячущийся
+SEEKER - охотник
+
+
+
 ШАБЛОН ПРИСОЕДИНЕНИЯ ИГРОКА
 
 {
-    "name" = "Igor",
-    "player_location_lat" = 20.0,
-    "player_location_lng" = 33.0
+    "name": "Igor",
+    "player_location_lat": 20.0,
+    "player_location_lng": 33.0
 }
 
 
 
-ВЕБСОКЕТ ЗАПРОСЫ
+ВЕБСОКЕТ ЗАПРОСЫ (запросы от игрока к серверу и от сервера к игрокам во время игры)
+
+От клиента серверу:
 
 ping - проверка связи
 {
@@ -223,7 +249,7 @@ update_location - обновление геолокации
     }
 }
 
-use_ability - использование способности
+use_ability - использование способности (выполняется только если статус игры active)
 {
     "type": "use_ability",
     "data": {
@@ -236,3 +262,57 @@ get_game_state - запрос полного состояния игры
     "type": "get_game_state",
     "data": {}
 }
+
+change_role - запрос на изменение роли (выполняется только если статус игры waiting)
+{
+    "type": "change_role",
+    "data": {
+        "role_id": UUID
+    }
+}
+
+change_ready_status - запрос на изменение статуса готовности (выполняется только если статус игры waiting)
+{
+    "type": "change_ready_status",
+    "data": {
+        "status": true/false
+    }
+}
+
+
+От сервера клиенту:
+
+create_zone - отрисовка зоны у клиента
+{
+    "type": "create_zone",
+    "data": {
+        "zone_id": zone.id,
+        "zone_type": zone_type,
+        "center_lat": 20.2443,
+        "center_lng": 33.2453,
+        "radius": 11.323
+    }
+}
+
+delete_zone - удаление зоны у клиента
+{
+    "type": "delete_zone",
+    "data": {
+        "zone_id": zone.id,
+}
+
+
+
+ТИПЫ ЗОН (zone_type)
+
+SAFE - синяя (начальная зона)
+DANGER - красная зона (бомба)
+WARNING - оранжевая зона (бомбардировка)
+AIRDROP - желтая зона (аирдроп)
+SNARE - серая (капкан)
+TRAP - черная (ловушка)
+SAFE_HOUSE - Я в домике
+SAFE_MANSION - Я в особняке
+
+
+

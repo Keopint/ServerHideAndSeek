@@ -27,9 +27,26 @@ async def create_game(
         raise HTTPException(status_code=500, detail=f"Ошибка при создании игры: {str(e)}")
 
 
-@game_router.api_route("/api/games/{game_id}/connect_player", methods=["POST"])
+@game_router.api_route("/api/games/{game_id}/start", methods=["POST"])
+async def start_game(
+        game_id: str,
+        db: AsyncSession = Depends(get_db)
+):
+    game_id = uuid.UUID(game_id)
+    try:
+        service = GameService(db)
+        game = await service.start_game(game_id)
+        return game
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Ошибка при запуске игры: {str(e)}")
+
+
+@game_router.api_route("/api/connect_player/{game_code}", methods=["POST"])
 async def connect_player(
-        game_id: uuid.UUID,
+        game_code: str,
         data: Dict[str, Any],
         db: AsyncSession = Depends(get_db)
 ):
@@ -54,7 +71,7 @@ async def connect_player(
 
     try:
         service = GameService(db)
-        new_player = await service.add_player(game_id, data)
+        new_player = await service.add_player(game_code, data)
         return new_player
     except HTTPException:
         raise

@@ -4,9 +4,9 @@ from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
-from services.player import PlayerService
 from timers import timer_manager, TimerType
 from utils.geo import is_point_in_circle
+from websocket_manager import connection_manager
 
 
 class ZoneService(BaseService):
@@ -40,6 +40,20 @@ class ZoneService(BaseService):
         )
         self.db.add(zone)
         await self.db.flush()  # получаем zone.id
+
+        connection_manager.broadcast_to_game(
+            game_id=game_id,
+            message={
+                "type": "create_zone",
+                "data": {
+                    "zone_id": zone.id,
+                    "zone_type": str(zone_type),
+                    "center_lat": center_lat,
+                    "center_lng": center_lng,
+                    "radius": radius
+                }
+            }
+        )
 
         # Планируем завершение
         await timer_manager.schedule(
@@ -80,14 +94,26 @@ class ZoneService(BaseService):
         players = result.scalars().all()
 
         from services.player import PlayerService
-        player_service = PlayerService(self.db)
+        from database.db import get_db
+        async for db in get_db():
+            player_service = PlayerService(db)
 
-        for player in players:
-            if player.lat is None or player.lng is None:
-                continue
-            if is_point_in_circle((player.lat, player.lng), (zone.center_lat, zone.center_lng), zone.radius):
-                # Игрок внутри зоны
-                await self._apply_zone_effect_to_player(player, zone, player_service)
+            connection_manager.broadcast_to_game(
+                game_id=game_id,
+                message={
+                    "type": "delete_zone",
+                    "data": {
+                        "zone_id": zone.id,
+                    }
+                }
+            )
+
+            for player in players:
+                if player.lat is None or player.lng is None:
+                    continue
+                if is_point_in_circle((player.lat, player.lng), (zone.center_lat, zone.center_lng), zone.radius):
+                    # Игрок внутри зоны
+                    await self._apply_zone_effect_to_player(player, zone, player_service)
 
         await self.db.commit()
 
@@ -130,19 +156,23 @@ class ZoneService(BaseService):
     async def check_player_in_zones(self, game_id: uuid.UUID, player_id: uuid.UUID):
         """Проверяет, в каких зонах находится игрок, и применяет эффекты (для мгновенных зон)."""
         # Можно вызывать при обновлении локации
-        player_service = PlayerService(self.db)
-        player = await player_service.get_player_in_game(game_id, player_id)
-        if not player or not player.is_alive:
-            return
+        from database.db import get_db
+        from services.player import PlayerService
+        async for db in get_db():
+            player_service = PlayerService(db)
 
-        zones = await self.get_active_zones(game_id)
-        for zone in zones:
-            if player.lat is None or player.lng is None:
-                continue
-            if is_point_in_circle((player.lat, player.lng), (zone.center_lat, zone.center_lng), zone.radius):
-                # Для красных зон может быть мгновенный эффект, но в нашей механике эффект наступает по истечении.
-                # Однако можно добавить логику "входа" (например, мгновенный капкан).
-                if zone.type in (ZoneType.TRAP, ZoneType.SNARE):
-                    # При входе в капкан эффект применяется сразу
-                    await self._apply_zone_effect_to_player(player, zone, player_service)
+            player = await player_service.get_player_in_game(game_id, player_id)
+            if not player or not player.is_alive:
+                return
+
+            zones = await self.get_active_zones(game_id)
+            for zone in zones:
+                if player.lat is None or player.lng is None:
+                    continue
+                if is_point_in_circle((player.lat, player.lng), (zone.center_lat, zone.center_lng), zone.radius):
+                    # Для красных зон может быть мгновенный эффект, но в нашей механике эффект наступает по истечении.
+                    # Однако можно добавить логику "входа" (например, мгновенный капкан).
+                    if zone.type in (ZoneType.TRAP, ZoneType.SNARE):
+                        # При входе в капкан эффект применяется сразу
+                        await self._apply_zone_effect_to_player(player, zone, player_service)
 

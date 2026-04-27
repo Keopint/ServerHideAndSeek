@@ -3,7 +3,7 @@ import uuid
 from starlette.websockets import WebSocket
 
 from database.models import (Game, Player, GameStatus, PlayerEffect,
-                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType)
+                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role)
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 from services.zone import ZoneService
@@ -27,6 +27,13 @@ class PlayerService(BaseService):
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_players_in_game(self, game_id: uuid.UUID):
+        stmt = select(Player).where(
+            Player.game_id == game_id
+        )
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
 
     async def update_player_location(
         self,
@@ -70,6 +77,37 @@ class PlayerService(BaseService):
         zone_service = ZoneService(self.db)
         await zone_service.check_player_in_zones()
 
+        self.db.add(player)
+        return player
+
+    async def change_player_role(
+            self,
+            game_id: uuid.UUID,
+            player_id: uuid.UUID,
+            role_id: uuid.UUID
+    ):
+        player = await self.get_player_in_game(game_id, player_id)
+        if not player:
+            raise ValueError(f"Player {player_id} not found in game {game_id}")
+
+        role = await self.db.get(Role, role_id)
+        if not role:
+            raise ValueError(f"Role {role_id} not found in game {game_id}")
+
+        player.role_id = role_id
+        self.db.add(player)
+        return player
+
+    async def change_ready_status(
+            self,
+            game_id: uuid.UUID,
+            player_id: uuid.UUID,
+            new_ready_status: bool
+    ):
+        player = await self.get_player_in_game(game_id, player_id)
+        if not player:
+            raise ValueError(f"Player {player_id} not found in game {game_id}")
+        player.is_player_ready = new_ready_status
         self.db.add(player)
         return player
 

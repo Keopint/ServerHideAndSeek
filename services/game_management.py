@@ -1,12 +1,15 @@
 import uuid
 from fastapi import HTTPException
-from database.models import Game, Player, Role, game_roles, ZoneType, Zone, Ability, role_abilities, \
+from sqlalchemy.orm import selectinload
+
+from database.models import Game, Player, Role, game_roles, ZoneType, Ability, role_abilities, \
     role_events, \
-    Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType, GameZone
+    Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType, GameZone, VictoryConditionType
 from sqlalchemy import select
 from typing import Any, Dict, Type, Coroutine
 from datetime import datetime, timezone, timedelta
 
+from utils.generator import generate_game_join_code
 from services.base import BaseService
 
 
@@ -32,23 +35,27 @@ class GameService(BaseService):
             host_role_name = host_data.get("host_role")  # может отсутствовать
 
             # 3. Списки ролей, способностей, событий
-            game_roles_list = data.get("game_roles", [])
+            game_roles_dict = data.get("game_roles", {})
+            roles_names = list(game_roles_dict.keys())
             roles_abilities = data.get("roles_abilities", {})
             roles_events = data.get("roles_events", {})
             events_configurations = data.get("events_configurations", {})
 
-            if not game_roles_list:
+            if not game_roles_dict.keys():
                 raise ValueError("Не указаны роли для игры")
 
             # Определяем роль хоста
             if host_role_name is None:
-                host_role_name = game_roles_list[0]  # берём первую роль
+                host_role_name = roles_names[0]  # берём первую роль
 
-            if host_role_name not in game_roles_list:
+            if host_role_name not in roles_names:
                 raise ValueError(f"Роль хоста '{host_role_name}' не найдена в списке ролей игры")
+
+            game_code = await generate_game_join_code(self.db, 6)
 
             # 4. Создаём игру
             game = Game(
+                game_code=game_code,
                 name=name,
                 status=GameStatus.WAITING,
                 safe_zone_center_lat=center_lat,
@@ -81,8 +88,15 @@ class GameService(BaseService):
 
             # 7. Обрабатываем роли
             role_objects = {}  # name -> Role
-            for role_name in game_roles_list:
-                role = Role(name=role_name)
+            for role_name in roles_names:
+                role_info = game_roles_dict.get(role_name, {})
+                health = role_info.get("health", 100)
+                victory_condition = VictoryConditionType(role_info.get("victory_condition", "HIDER"))
+                role = Role(
+                    name=role_name,
+                    health=health,
+                    victory_condition=victory_condition
+                )
                 self.db.add(role)
                 await self.db.flush()
                 role_objects[role_name] = role
@@ -187,6 +201,30 @@ class GameService(BaseService):
             await self.db.rollback()
             raise ValueError(f"Ошибка при создании игры: {str(e)}")
 
+    async def start_game(self, game_id: uuid.UUID) -> Type[Game]:
+        stmt = select(Player).where(
+            Player.game_id == game_id,
+        )
+        players = (await self.db.execute(stmt)).scalars().all()
+        all_is_ready = True
+        for player in players:
+            if not player.is_player_ready:
+                all_is_ready = False
+                break
+        if not all_is_ready:
+            raise ValueError("Not all players active")
+        game = await self.db.get(Game, game_id)
+        game.status = GameStatus.ACTIVE
+        await self.db.commit()
+        await self.db.refresh(game)
+        return game
+
+    async def get_status(self, game_id: uuid.UUID) -> Type[GameStatus]:
+        game = await self.db.get(Game, game_id)
+        if not game:
+            raise ValueError("Game not found")
+        return game.status
+
     async def get_game(self, game_id: uuid.UUID) -> Type[Game]:
         """Получить игру или выбросить исключение"""
 
@@ -195,20 +233,26 @@ class GameService(BaseService):
             raise ValueError(f"Game with id {game_id} not found")
         return game
 
-    async def add_player(self, game_id: uuid.UUID, data: Dict[str, Any]):
-        game = await self.db.get(Game, game_id)
+    async def add_player(self, game_code: str, data: Dict[str, Any]):
+        stmt = select(Game).where(Game.game_code == game_code).options(selectinload(Game.roles))
+        result = await self.db.execute(stmt)
+        game = result.scalar_one_or_none()
+
         if not game:
             raise ValueError("Game not found")
 
         if game.status != GameStatus.WAITING:
             raise ValueError("Game is already active")
 
-        first_role = game.roles[0]
+        if not game.roles:
+            raise ValueError("Game has no roles")
+
+        first_role = game.roles[0]  # теперь безопасно
 
         new_player = Player(
-            game_id=game_id,
+            game_id=game.id,
             name=data["name"],
-            role_id=first_role.id,  # теперь это FK
+            role_id=first_role.id,
             health=first_role.health,
             is_alive=True,
             location_lat=data["player_location_lat"],
@@ -219,13 +263,4 @@ class GameService(BaseService):
         await self.db.commit()
         await self.db.refresh(new_player)
         return new_player
-
-    async def get_player_in_game(self, game_id: uuid.UUID, player_id: uuid.UUID) -> Player | None:
-        """Возвращает игрока, только если он принадлежит указанной игре."""
-        stmt = select(Player).where(
-            Player.id == player_id,
-            Player.game_id == game_id
-        )
-        result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
 
