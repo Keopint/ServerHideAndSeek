@@ -4,13 +4,37 @@ from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
-from timers import timer_manager, TimerType
+from services.timers import timer_manager, TimerType
 from utils.geo import is_point_in_circle
 from websocket_manager import connection_manager
 
 
 class ZoneService(BaseService):
     """Сервис для создания, проверки и завершения игровых зон."""
+
+    async def activate_safe_zone(
+        self,
+        game_id: uuid.UUID
+    ):
+        stmt = select(GameZone).where(
+            GameZone.game_id == game_id,
+            GameZone.type == ZoneType.SAFE
+        )
+        game = await self.db.get(Game, game_id)
+        result = await self.db.execute(stmt)
+        safe_zone = result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+
+        duration_seconds = game.game_duration
+
+        """активация safe зоны"""
+        await timer_manager.safe_zone_schedule(
+            game_id=game_id,
+            safe_zone=safe_zone,
+            end_time=now + timedelta(seconds=duration_seconds),
+            db=self.db
+        )
+
 
     async def create_zone(
         self,

@@ -4,7 +4,8 @@ from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
-from timers import timer_manager, TimerType
+from services.timers import timer_manager, TimerType
+from websocket_manager import connection_manager
 
 
 class EffectService(BaseService):
@@ -31,6 +32,19 @@ class EffectService(BaseService):
         )
         self.db.add(effect)
         await self.db.flush()
+
+        connection_manager.send_personal(
+            player_id=player_id,
+            message={
+                "type": "create_effect",
+                "data": {
+                    "effect_id": effect.id,
+                    "effect_type": str(effect_type),
+                    "starts_at": now,
+                    "ends_at": now + timedelta(seconds=duration_seconds),
+                }
+            }
+        )
 
         # Планируем завершение
         player = await self.db.get(Player, player_id)

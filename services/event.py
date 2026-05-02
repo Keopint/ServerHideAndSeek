@@ -78,7 +78,8 @@ class EventService(BaseService):
                 center_lat=lat,
                 center_lng=lng,
                 duration_seconds=duration_seconds,
-                radius=event_data.get("radius")
+                radius=event_data.get("radius"),
+                damage=0
             )
         elif new_game_event.event_type == EventType.BOMBARDMENT:
 
@@ -97,7 +98,7 @@ class EventService(BaseService):
                 center_lng=lng,
                 duration_seconds=duration_seconds,
                 radius=event_data.get("radius"),
-                damage=event_data.get("damage")
+                damage=event_data.get("damage", 50)
             )
 
 

@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from database.models import Base
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./geogame.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./database/geogame.db")
 
 engine = None
 AsyncSessionLocal = None
@@ -21,5 +21,5 @@ async def get_db():
     """Возвращает сессию базы данных. Использовать: async for db in get_db()"""
     if AsyncSessionLocal is None:
         await init_db()
-    async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal as session:
         yield session

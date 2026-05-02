@@ -1,16 +1,21 @@
 import uuid
-from fastapi import HTTPException
 from sqlalchemy.orm import selectinload
 
 from database.models import Game, Player, Role, game_roles, ZoneType, Ability, role_abilities, \
     role_events, \
     Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType, GameZone, VictoryConditionType
 from sqlalchemy import select
-from typing import Any, Dict, Type, Coroutine
-from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, Type
+from datetime import datetime, timezone
 
+from services.timers import timer_manager
 from utils.generator import generate_game_join_code
 from services.base import BaseService
+from services.player import PlayerService
+from services.zone import ZoneService
+from datetime import timezone, timedelta
+
+from websocket_manager import connection_manager
 
 
 class GameService(BaseService):
@@ -26,6 +31,7 @@ class GameService(BaseService):
             zone_shrink_interval = data.get("zone_shrink_interval", 120)
             game_duration = data.get("game_duration", 1800)
             zone_boundary_damage = data.get("zone_boundary_damage", 1)
+            time_to_hide = data.get("time_to_hide", 300)
 
             # 2. Информация о хосте
             host_data = data["host_player"]
@@ -63,6 +69,7 @@ class GameService(BaseService):
                 safe_zone_radius=safe_zone_radius,
                 min_zone_radius=min_zone_radius,
                 zone_shrink_interval=zone_shrink_interval,
+                time_to_hide=time_to_hide,
                 game_duration=game_duration,
                 last_shrink_at=datetime.now(timezone.utc),
                 zone_boundary_damage=zone_boundary_damage
@@ -79,7 +86,6 @@ class GameService(BaseService):
                 center_lng=center_lng,
                 radius=safe_zone_radius,
                 starts_at=now,
-                ends_at=now + timedelta(seconds=game_duration),
                 is_active=True
             )
             self.db.add(safe_zone)
@@ -201,11 +207,18 @@ class GameService(BaseService):
             await self.db.rollback()
             raise ValueError(f"Ошибка при создании игры: {str(e)}")
 
-    async def start_game(self, game_id: uuid.UUID) -> Type[Game]:
-        stmt = select(Player).where(
-            Player.game_id == game_id,
+    async def get_game_with_relations(self, game_id: uuid.UUID):
+        stmt = select(Game).where(Game.id == game_id).options(
+            selectinload(Game.roles).selectinload(Role.abilities),
+            selectinload(Game.roles).selectinload(Role.events)
         )
-        players = (await self.db.execute(stmt)).scalars().all()
+        result = await self.db.execute(stmt)
+        game_with_relations = result.scalar_one()
+        return game_with_relations
+
+    async def start_game(self, game_id: uuid.UUID) -> Type[Game]:
+        player_service = PlayerService(self.db)
+        players = await player_service.get_players_in_game(game_id=game_id)
         all_is_ready = True
         for player in players:
             if not player.is_player_ready:
@@ -213,11 +226,40 @@ class GameService(BaseService):
                 break
         if not all_is_ready:
             raise ValueError("Not all players active")
+
         game = await self.db.get(Game, game_id)
-        game.status = GameStatus.ACTIVE
+        game.status = GameStatus.HIDE_TIME
+
         await self.db.commit()
         await self.db.refresh(game)
+
+        from database.db import get_db
+        with get_db as db:
+            zone_service = ZoneService(db)
+            await zone_service.activate_safe_zone(game.id)
+
+        now = datetime.now(timezone.utc)
+        duration_seconds = game.game_duration
+
+        await timer_manager.timer_to_hide(
+            game_id=game_id,
+            end_time=now + timedelta(seconds=duration_seconds),
+            callback=self._on_timer_finished_callback(game_id)
+        )
         return game
+
+    async def _on_timer_finished_callback(self, game_id: uuid.UUID):
+        game = await self.db.get(Game, game_id)
+        game.status = GameStatus.ACTIVE
+        await connection_manager.broadcast_to_game(
+            {
+                "type": "timer_to_hide_finished",
+                "data": {}
+            },
+            game_id=game_id
+        )
+        await self.db.commit()
+        await self.db.refresh(game)
 
     async def get_status(self, game_id: uuid.UUID) -> Type[GameStatus]:
         game = await self.db.get(Game, game_id)

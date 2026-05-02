@@ -17,6 +17,7 @@ import enum
 
 class GameStatus(enum.Enum):
     WAITING = "WAITING"
+    HIDE_TIME = "HIDE_TIME"
     ACTIVE = "ACTIVE"
     FINISHED = "FINISHED"
 
@@ -222,6 +223,7 @@ class Game(Base):
     min_zone_radius = Column(Float, nullable=False, default=50.0)
     zone_shrink_interval = Column(Integer, nullable=False, default=120)
     game_duration = Column(Integer, nullable=False, default=1800)
+    time_to_hide = Column(Integer, nullable=False, default=300)
     zone_boundary_damage = Column(Integer, nullable=False, default=1)
     current_safe_zone_id = Column(UUID(as_uuid=True), ForeignKey("game_zones.id"),
                                   comment="optional, references active safe zone")

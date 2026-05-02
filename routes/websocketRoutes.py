@@ -37,20 +37,29 @@ async def handle_client_message(
         # Ответить pong с серверным временем
         await connection_manager.send_personal({
             "type": "pong",
-            "server_time": datetime.now(timezone.utc).isoformat()
+            "data": {
+                "server_time": datetime.now(timezone.utc).isoformat()
+            }
         }, player_id)
 
     elif msg_type == "change_role":
         new_role_id = data.get("role_id")
         if new_role_id is None:
             await connection_manager.send_personal({
-                "type": "error",
-                "message": "Missing role_id"
+                "type": "role_changed",
+                "data": {
+                    "role_id": new_role_id
+                }
             }, player_id)
             return
         try:
             await player_service.change_player_role(game_id, player_id, new_role_id)
             await db.commit()
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": "Missing role_id"
+            }, player_id)
+            return
         except ValueError as e:
             await connection_manager.send_personal({
                 "type": "error",
@@ -68,6 +77,21 @@ async def handle_client_message(
         try:
             await player_service.change_ready_status(game_id, player_id, new_status)
             await db.commit()
+            await connection_manager.send_personal({
+                "type": "ready_status_changed",
+                "data": {
+                    "status": new_status
+                }
+            }, player_id)
+            players = await player_service.get_players_in_game(game_id=game_id)
+            all_is_ready = True
+            for player in players:
+                if not player.is_player_ready:
+                    all_is_ready = False
+                    break
+            if all_is_ready:
+                game_service = GameService(db)
+                await game_service.start_game(game_id=game_id)
         except ValueError as e:
             await connection_manager.send_personal({
                 "type": "error",
@@ -93,9 +117,12 @@ async def handle_client_message(
                 game_id,
                 {
                     "type": "player_moved",
-                    "player_id": str(player_id),
-                    "location": {"lat": lat, "lng": lng},
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "data": {
+                        "player_id": str(player_id),
+                        "location_lat": lat,
+                        "location_lng": lng,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
                 },
                 exclude_player=player_id
             )
@@ -132,8 +159,10 @@ async def handle_client_message(
             # Можно также сразу подтвердить игроку
             await connection_manager.send_personal({
                 "type": "ability_used",
-                "ability": ability_type,
-                "result": result
+                "data": {
+                    "ability": ability_type,
+                    "result": result
+                }
             }, player_id)
         except ValueError as e:
             await connection_manager.send_personal({
@@ -198,11 +227,15 @@ def register_websocket_endpoint(app):
                 exclude_player=player_id
             )
 
-            # Отправить подключившемуся игроку начальное состояние игры
-            initial_state = await game_service.get_player_in_game(game_id, player_id)
+            player_service = PlayerService(db)
+
+            # Отправить подключившемуся игроку информацию о его полях и начальное состояние игры
+            initial_state = await player_service.get_player_in_game(game_id, player_id)
+            game_data = await game_service.get_game_with_relations(game_id)
+
             await connection_manager.send_personal({
                 "type": "game_state",
-                "data": initial_state
+                "data": game_data
             }, player_id)
 
             # Основной цикл приема сообщений
@@ -226,14 +259,38 @@ def register_websocket_endpoint(app):
                     }, player_id)
 
         except WebSocketDisconnect:
-            # Клиент отключился
-            pass
+            # Убираем соединение из менеджера
+            connection_manager.disconnect(player_id)
+            # Оповещаем других игроков, что игрок офлайн
+            try:
+                await connection_manager.broadcast_to_game(
+                    game_id,
+                    {
+                        "type": "player_offline",
+                        "player_id": str(player_id)
+                    },
+                    exclude_player=player_id
+                )
+            except:
+                await connection_manager.send_personal({
+                    "type": "error",
+                    "message": f"Fail websocket close"
+                }, player_id)
+
         except Exception as e:
-            print(f"[WS] Unexpected error: {e}")
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": f"[WS] Unexpected error: {e}"
+            }, player_id)
+
             try:
                 await websocket.close(code=1011, reason="Internal error")
             except:
-                pass
+                await connection_manager.send_personal({
+                    "type": "error",
+                    "message": f"Fail websocket close"
+                }, player_id)
+
         finally:
             # Убираем соединение из менеджера
             connection_manager.disconnect(player_id)
@@ -248,7 +305,10 @@ def register_websocket_endpoint(app):
                     exclude_player=player_id
                 )
             except:
-                pass
+                await connection_manager.send_personal({
+                    "type": "error",
+                    "message": f"Fail websocket close"
+                }, player_id)
             # Не забываем закрыть сессию БД, если она была получена через get_db
             # (в текущей реализации get_db возвращает асинхронный генератор, его нужно аккуратно завершить)
             await db.close()

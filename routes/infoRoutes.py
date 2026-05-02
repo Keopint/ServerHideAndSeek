@@ -14,10 +14,10 @@ async def get_game_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     game_id = uuid.UUID(game_id)
-    service = GameService(db)
     try:
-        game = await service.get_game(game_id)
-        return game
+        service = GameService(db)
+        game_with_relations = await service.get_game_with_relations(game_id)
+        return game_with_relations
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

@@ -1,14 +1,12 @@
 import uuid
 
-from starlette.websockets import WebSocket
-
 from database.models import (Game, Player, GameStatus, PlayerEffect,
                              EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role)
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 from services.zone import ZoneService
 from services.base import BaseService
-from timers import TimerType, timer_manager
+from services.timers import TimerType, timer_manager
 from utils.geo import calculate_distance, validate_coordinates
 from websocket_manager import connection_manager
 
@@ -28,12 +26,12 @@ class PlayerService(BaseService):
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_players_in_game(self, game_id: uuid.UUID):
+    async def get_players_in_game(self, game_id: uuid.UUID) -> list[Player]:
         stmt = select(Player).where(
             Player.game_id == game_id
         )
-        result = await self.db.execute(stmt)
-        return result.scalars().all()
+        players = (await self.db.execute(stmt)).scalars().all()
+        return players
 
     async def update_player_location(
         self,

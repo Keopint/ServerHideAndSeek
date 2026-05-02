@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone, timedelta
-from timers import timer_manager, TimerType
+from services.timers import timer_manager, TimerType
 from websocket_manager import connection_manager
 
 class GameService:
@@ -460,7 +460,7 @@ class GameService:
             self.db.add(zone)
 
         # Планируем окончание эффекта через TimerManager
-        from timers import timer_manager, TimerType
+        from services.timers import timer_manager, TimerType
         await timer_manager.schedule(
             game_id=player.game_id,
             entity_type=TimerType.EFFECT,
