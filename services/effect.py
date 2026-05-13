@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
 from services.timers import timer_manager, TimerType
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
 
 
 class EffectService(BaseService):

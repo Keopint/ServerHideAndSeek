@@ -21,5 +21,5 @@ async def get_db():
     """Возвращает сессию базы данных. Использовать: async for db in get_db()"""
     if AsyncSessionLocal is None:
         await init_db()
-    async with AsyncSessionLocal as session:
+    async with AsyncSessionLocal() as session:
         yield session

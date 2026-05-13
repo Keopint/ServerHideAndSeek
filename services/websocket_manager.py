@@ -1,10 +1,8 @@
 # websocket_manager.py
 import asyncio
 from typing import Dict, Set, Any, Optional
-from fastapi import WebSocket, WebSocketDisconnect
-import json
+from fastapi import WebSocket
 import uuid
-from datetime import datetime, timezone
 
 class ConnectionManager:
     """

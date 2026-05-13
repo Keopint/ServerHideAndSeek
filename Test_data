@@ -106,64 +106,181 @@
 
 Ответ от сервера клиенту:
 {
-    "game": {
-        "game_code": "PCTPWQ",
-        "created_at": "2026-04-28T07:58:00",
-        "current_safe_zone_id": "23345833-e5e8-4bba-ab83-e40d5d7182b1",
-        "safe_zone_center_lat": 55.751244,
-        "last_shrink_at": "2026-04-28T07:58:25.108631",
-        "safe_zone_center_lng": 37.618423,
-        "time_to_hide": 300,
-        "safe_zone_radius": 500,
-        "min_zone_radius": 50,
-        "id": "c61a143c-fa39-4514-babe-612619ce1f3e",
-        "zone_shrink_interval": 120,
-        "name": "Тестовая игра",
-        "game_duration": 1800,
-        "status": "WAITING",
-        "zone_boundary_damage": 1
-    }
-    "game_roles": {
-        "Amogus": {
-            "TRAP": {
-                "duration_seconds": 600,
-                "number_uses": 2,
-                "recharge_time": 60,
-                "addition_data": {
-                    "radius": 10.0,
-                    "trap_duration_seconds": 120
-                }
+  "game": {
+    "game_code": "C3BLBA",
+    "created_at": "2026-05-10T13:31:00",
+    "zone_boundary_damage": 1,
+    "safe_zone_center_lat": 55.751244,
+    "current_safe_zone_id": "11e28ede-00cd-4313-b129-cb6a5bfef0b1",
+    "safe_zone_center_lng": 37.618423,
+    "last_shrink_at": "2026-05-10T13:31:51.648583",
+    "safe_zone_radius": 500,
+    "min_zone_radius": 50,
+    "id": "0c92cc10-e7a2-4ae2-9054-151c6341040a",
+    "zone_shrink_interval": 120,
+    "name": "Тестовая игра",
+    "game_duration": 1800,
+    "status": "WAITING",
+    "time_to_hide": 300,
+    "roles": [
+      {
+        "name": "Amogus",
+        "health": 200,
+        "victory_condition": "SEEKER",
+        "id": "c58157e8-e995-4233-8213-4e954206c3c2",
+        "events": [
+          {
+            "activation_frequency": "FREQUENT",
+            "id": "46728b22-2451-4a0b-8239-6a7617aee56a",
+            "type": "BOMB",
+            "event_data": {
+              "duration_seconds": 600,
+              "radius": 10,
+              "damage": 100
+            }
+          },
+          {
+            "activation_frequency": "RARE",
+            "id": "8140926a-f36c-4701-a9dd-e22537280113",
+            "type": "AIRDROP",
+            "event_data": {
+              "radius": 10
+            }
+          },
+          {
+            "type": "BOMBARDMENT",
+            "activation_frequency": "COMMON",
+            "event_data": {
+              "duration_seconds": 600,
+              "radius": 5,
+              "damage": 50
             },
-            "SCAN": {
-                "duration_seconds": 600,
-                "number_uses": 2,
-                "recharge_time": 60,
-                "addition_data": {}
+            "id": "aa374124-7897-4ec0-aa7c-3a7f0322d5c4"
+          }
+        ],
+        "abilities": [
+          {
+            "id": "f360f8c1-8b0e-455e-b701-a7ef2daf8052",
+            "number_uses": 2,
+            "data": {
+              "radius": 10,
+              "trap_duration_seconds": 120
+            },
+            "ability_type": "TRAP",
+            "recharge_time": 60,
+            "duration_seconds": null
+          },
+          {
+            "id": "a4eb61c0-8f95-41a9-a885-23dc7a7ee701",
+            "number_uses": 2,
+            "data": {},
+            "ability_type": "SCAN",
+            "recharge_time": 60,
+            "duration_seconds": null
+          }
+        ]
+      },
+      {
+        "name": "Hunter",
+        "health": 100,
+        "victory_condition": "SEEKER",
+        "id": "72dff9e7-ed6e-4a75-a21f-92b6b8957798",
+        "events": [
+          {
+            "activation_frequency": "FREQUENT",
+            "id": "46728b22-2451-4a0b-8239-6a7617aee56a",
+            "type": "BOMB",
+            "event_data": {
+              "duration_seconds": 600,
+              "radius": 10,
+              "damage": 100
             }
-        },
-        "Hunter": {
-            "PERSONAL_BOMB": {
-                "duration_seconds": 600,
-                "number_uses": 2,
-                "recharge_time": 60,
-                "addition_data": {
-                    "radius": 10.0,
-                    "damage": 100
-                }
+          },
+          {
+            "activation_frequency": "RARE",
+            "id": "8140926a-f36c-4701-a9dd-e22537280113",
+            "type": "AIRDROP",
+            "event_data": {
+              "radius": 10
             }
-        },
-        "Hider": {
-            "SNARE": {
-                "duration_seconds": 600,
-                "number_uses": 2,
-                "recharge_time": 60,
-                "addition_data": {
-                    "radius": 10.0,
-                    "trap_duration_seconds": 600
-                }
+          },
+          {
+            "type": "BOMBARDMENT",
+            "activation_frequency": "COMMON",
+            "event_data": {
+              "duration_seconds": 600,
+              "radius": 5,
+              "damage": 50
+            },
+            "id": "aa374124-7897-4ec0-aa7c-3a7f0322d5c4"
+          }
+        ],
+        "abilities": [
+          {
+            "id": "98354b7b-545e-4eeb-83f5-17635eb8dc5e",
+            "number_uses": 2,
+            "data": {
+              "radius": 10,
+              "damage": 100
+            },
+            "ability_type": "PERSONAL_BOMB",
+            "recharge_time": 60,
+            "duration_seconds": null
+          }
+        ]
+      },
+      {
+        "name": "Hider",
+        "health": 100,
+        "victory_condition": "HIDER",
+        "id": "8c2d9699-a97e-4509-98fe-91e15a1e41f6",
+        "events": [
+          {
+            "activation_frequency": "FREQUENT",
+            "id": "46728b22-2451-4a0b-8239-6a7617aee56a",
+            "type": "BOMB",
+            "event_data": {
+              "duration_seconds": 600,
+              "radius": 10,
+              "damage": 100
             }
-        }
-    }
+          },
+          {
+            "activation_frequency": "RARE",
+            "id": "8140926a-f36c-4701-a9dd-e22537280113",
+            "type": "AIRDROP",
+            "event_data": {
+              "radius": 10
+            }
+          },
+          {
+            "type": "BOMBARDMENT",
+            "activation_frequency": "COMMON",
+            "event_data": {
+              "duration_seconds": 600,
+              "radius": 5,
+              "damage": 50
+            },
+            "id": "aa374124-7897-4ec0-aa7c-3a7f0322d5c4"
+          }
+        ],
+        "abilities": [
+          {
+            "ability_type": "SNARE",
+            "number_uses": 2,
+            "recharge_time": 60,
+            "data": {
+              "radius": 10,
+              "trap_duration_seconds": 600
+            },
+            "id": "b0a88520-483c-45bf-81ef-ce0da38f1ea8",
+            "duration_seconds": null
+          }
+        ]
+      }
+    ]
+  },
+  "host_player_id": "652f579f-c0bf-43ae-98eb-afe3cf0e0169"
 }
 
 **************************************************
@@ -245,7 +362,7 @@
     "BOMB": {
         "activation_frequency": "FREQUENT",
         "addition_data": {
-            "duration_seconds": 600,
+            "duration_seconds": 60,
             "radius": 10.0,
             "damage": 100
         }
@@ -259,9 +376,15 @@
     "BOMBARDMENT": {
         "activation_frequency": "COMMON",
         "addition_data": {
-            "duration_seconds": 600,
+            "duration_seconds": 60,
             "radius": 5.0,
             "damage": 50
+        }
+    }
+    "REVEAL": {
+        "activation_frequency": "COMMON",
+        "addition_data": {
+            "duration_seconds": 60,
         }
     }
 }
@@ -304,7 +427,7 @@ SEEKER - охотник
 Ответ от сервера клиенту:
 {
     "game_id": "23345833-e5e8-4bba-ab83-e40d5d7182b1",
-    "player_id": "awfrawde8-4bba-ab83-eerwd5555b1",
+    "player_id": "awfrawde8-4bba-ab83-fsfe-eerwd5555b1",
     "player_name": "Igor",
     "game_status": "WAITING",
     "ws_url": "ws://your-server.com/ws/{game_id}/{player_id}"
@@ -330,6 +453,203 @@ ping - проверка связи
     "type": "pong",
     "data": {
         "server_time": "2026-04-28T08:01:53.075554"
+    }
+}
+
+-------------------------------------------------
+
+websocket_connected_player - сообщение клиенту от сервера после соединения с websocket
+{
+    "type": "websocket_connected_player",
+    "data": {
+        "player_data": {
+            "name": "Keopint",
+            "health": 100,
+            "location_lat": 20,
+            "last_location_update": "2026-05-02T20:56:30.711005",
+            "player_data": null,
+            "id": "819131a0-aed4-4fc1-b191-6398a264ac1d",
+            "game_id": "b3db2f60-82ed-461b-ab29-4768b9e8d7c3",
+            "role_id": "a7446315-1aba-43a3-8507-226efafae9bf",
+            "is_alive": true,
+            "location_lng": 20,
+            "trapped_until": null,
+            "is_player_ready": false
+        },
+        "game_data": {
+          "game_code": "9Z3LR7",
+          "created_at": "2026-05-02T20:56:00",
+          "zone_boundary_damage": 1,
+          "safe_zone_center_lat": 55.751244,
+          "current_safe_zone_id": "3eb0b126-c230-4945-b435-a763d86ad4b8",
+          "safe_zone_center_lng": 37.618423,
+          "last_shrink_at": "2026-05-02T20:56:30.664117",
+          "safe_zone_radius": 500,
+          "min_zone_radius": 50,
+          "id": "b3db2f60-82ed-461b-ab29-4768b9e8d7c3",
+          "zone_shrink_interval": 120,
+          "name": "Тестовая игра",
+          "game_duration": 1800,
+          "status": "WAITING",
+          "time_to_hide": 300,
+          "roles": [
+            {
+              "name": "Amogus",
+              "health": 200,
+              "id": "a7446315-1aba-43a3-8507-226efafae9bf",
+              "victory_condition": "SEEKER",
+              "events": [
+                {
+                  "activation_frequency": "FREQUENT",
+                  "id": "35807136-6688-4977-8acc-fe06672a2496",
+                  "event_data": {
+                    "duration_seconds": 600,
+                    "radius": 10,
+                    "damage": 100
+                  },
+                  "type": "BOMB"
+                },
+                {
+                  "activation_frequency": "RARE",
+                  "id": "4ccd1a0e-60bb-4a43-84b3-dc97393bebac",
+                  "event_data": {
+                    "radius": 10
+                  },
+                  "type": "AIRDROP"
+                },
+                {
+                  "activation_frequency": "COMMON",
+                  "id": "9ad66883-29a4-457e-8ce5-40f639e63a53",
+                  "event_data": {
+                    "duration_seconds": 600,
+                    "radius": 5,
+                    "damage": 50
+                  },
+                  "type": "BOMBARDMENT"
+                }
+              ],
+              "abilities": [
+                {
+                  "id": "d388712f-eab7-4b70-a9ad-f97fb3101ac1",
+                  "number_uses": 2,
+                  "data": {
+                    "radius": 10,
+                    "trap_duration_seconds": 120
+                  },
+                  "ability_type": "TRAP",
+                  "recharge_time": 60,
+                  "duration_seconds": null
+                },
+                {
+                  "id": "fc251440-76b7-4e12-b731-c8b43378cba9",
+                  "number_uses": 2,
+                  "data": {},
+                  "ability_type": "SCAN",
+                  "recharge_time": 60,
+                  "duration_seconds": null
+                }
+              ]
+            },
+            {
+              "name": "Hunter",
+              "health": 100,
+              "id": "9ff9be65-4566-44fc-83cf-062287425357",
+              "victory_condition": "SEEKER",
+              "events": [
+                {
+                  "activation_frequency": "FREQUENT",
+                  "id": "35807136-6688-4977-8acc-fe06672a2496",
+                  "event_data": {
+                    "duration_seconds": 600,
+                    "radius": 10,
+                    "damage": 100
+                  },
+                  "type": "BOMB"
+                },
+                {
+                  "activation_frequency": "RARE",
+                  "id": "4ccd1a0e-60bb-4a43-84b3-dc97393bebac",
+                  "event_data": {
+                    "radius": 10
+                  },
+                  "type": "AIRDROP"
+                },
+                {
+                  "activation_frequency": "COMMON",
+                  "id": "9ad66883-29a4-457e-8ce5-40f639e63a53",
+                  "event_data": {
+                    "duration_seconds": 600,
+                    "radius": 5,
+                    "damage": 50
+                  },
+                  "type": "BOMBARDMENT"
+                }
+              ],
+              "abilities": [
+                {
+                  "id": "594b9419-c8bb-4b61-ab77-ec6acfaac8e7",
+                  "number_uses": 2,
+                  "data": {
+                    "radius": 10,
+                    "damage": 100
+                  },
+                  "ability_type": "PERSONAL_BOMB",
+                  "recharge_time": 60,
+                  "duration_seconds": null
+                }
+              ]
+            },
+            {
+              "name": "Hider",
+              "health": 100,
+              "id": "0bf732bc-9234-4527-ac1e-c6ef00eb9bd5",
+              "victory_condition": "HIDER",
+              "events": [
+                {
+                  "activation_frequency": "FREQUENT",
+                  "id": "35807136-6688-4977-8acc-fe06672a2496",
+                  "event_data": {
+                    "duration_seconds": 600,
+                    "radius": 10,
+                    "damage": 100
+                  },
+                  "type": "BOMB"
+                },
+                {
+                  "activation_frequency": "RARE",
+                  "id": "4ccd1a0e-60bb-4a43-84b3-dc97393bebac",
+                  "event_data": {
+                    "radius": 10
+                  },
+                  "type": "AIRDROP"
+                },
+                {
+                  "activation_frequency": "COMMON",
+                  "id": "9ad66883-29a4-457e-8ce5-40f639e63a53",
+                  "event_data": {
+                    "duration_seconds": 600,
+                    "radius": 5,
+                    "damage": 50
+                  },
+                  "type": "BOMBARDMENT"
+                }
+              ],
+              "abilities": [
+                {
+                  "id": "3579f462-fc31-4196-97e3-826826517b07",
+                  "number_uses": 2,
+                  "data": {
+                    "radius": 10,
+                    "trap_duration_seconds": 600
+                  },
+                  "ability_type": "SNARE",
+                  "recharge_time": 60,
+                  "duration_seconds": null
+                }
+              ]
+            }
+          ]
+        }
     }
 }
 
@@ -391,23 +711,181 @@ get_game_state - запрос полного состояния игры
 {
     "type": "game_state",
     "data": {
-        "game_code": "PCTPWQ",
-        "created_at": "2026-04-28T07:58:00",
-        "current_safe_zone_id": "23345833-e5e8-4bba-ab83-e40d5d7182b1",
+        "game_code": "C3BLBA",
+        "created_at": "2026-05-10T13:31:00",
+        "zone_boundary_damage": 1,
         "safe_zone_center_lat": 55.751244,
-        "last_shrink_at": "2026-04-28T07:58:25.108631",
+        "current_safe_zone_id": "11e28ede-00cd-4313-b129-cb6a5bfef0b1",
         "safe_zone_center_lng": 37.618423,
+        "last_shrink_at": "2026-05-10T13:31:51.648583",
         "safe_zone_radius": 500,
-        "time_to_hide": 300,
         "min_zone_radius": 50,
-        "id": "c61a143c-fa39-4514-babe-612619ce1f3e",
+        "id": "0c92cc10-e7a2-4ae2-9054-151c6341040a",
         "zone_shrink_interval": 120,
         "name": "Тестовая игра",
         "game_duration": 1800,
         "status": "WAITING",
-        "zone_boundary_damage": 1
+        "time_to_hide": 300,
+        "roles": [
+          {
+            "name": "Amogus",
+            "health": 200,
+            "victory_condition": "SEEKER",
+            "id": "c58157e8-e995-4233-8213-4e954206c3c2",
+            "events": [
+              {
+                "activation_frequency": "FREQUENT",
+                "id": "46728b22-2451-4a0b-8239-6a7617aee56a",
+                "type": "BOMB",
+                "event_data": {
+                  "duration_seconds": 600,
+                  "radius": 10,
+                  "damage": 100
+                }
+              },
+              {
+                "activation_frequency": "RARE",
+                "id": "8140926a-f36c-4701-a9dd-e22537280113",
+                "type": "AIRDROP",
+                "event_data": {
+                  "radius": 10
+                }
+              },
+              {
+                "type": "BOMBARDMENT",
+                "activation_frequency": "COMMON",
+                "event_data": {
+                  "duration_seconds": 600,
+                  "radius": 5,
+                  "damage": 50
+                },
+                "id": "aa374124-7897-4ec0-aa7c-3a7f0322d5c4"
+              }
+            ],
+            "abilities": [
+              {
+                "id": "f360f8c1-8b0e-455e-b701-a7ef2daf8052",
+                "number_uses": 2,
+                "data": {
+                  "radius": 10,
+                  "trap_duration_seconds": 120
+                },
+                "ability_type": "TRAP",
+                "recharge_time": 60,
+                "duration_seconds": null
+              },
+              {
+                "id": "a4eb61c0-8f95-41a9-a885-23dc7a7ee701",
+                "number_uses": 2,
+                "data": {},
+                "ability_type": "SCAN",
+                "recharge_time": 60,
+                "duration_seconds": null
+              }
+            ]
+          },
+          {
+            "name": "Hunter",
+            "health": 100,
+            "victory_condition": "SEEKER",
+            "id": "72dff9e7-ed6e-4a75-a21f-92b6b8957798",
+            "events": [
+              {
+                "activation_frequency": "FREQUENT",
+                "id": "46728b22-2451-4a0b-8239-6a7617aee56a",
+                "type": "BOMB",
+                "event_data": {
+                  "duration_seconds": 600,
+                  "radius": 10,
+                  "damage": 100
+                }
+              },
+              {
+                "activation_frequency": "RARE",
+                "id": "8140926a-f36c-4701-a9dd-e22537280113",
+                "type": "AIRDROP",
+                "event_data": {
+                  "radius": 10
+                }
+              },
+              {
+                "type": "BOMBARDMENT",
+                "activation_frequency": "COMMON",
+                "event_data": {
+                  "duration_seconds": 600,
+                  "radius": 5,
+                  "damage": 50
+                },
+                "id": "aa374124-7897-4ec0-aa7c-3a7f0322d5c4"
+              }
+            ],
+            "abilities": [
+              {
+                "id": "98354b7b-545e-4eeb-83f5-17635eb8dc5e",
+                "number_uses": 2,
+                "data": {
+                  "radius": 10,
+                  "damage": 100
+                },
+                "ability_type": "PERSONAL_BOMB",
+                "recharge_time": 60,
+                "duration_seconds": null
+              }
+            ]
+          },
+          {
+            "name": "Hider",
+            "health": 100,
+            "victory_condition": "HIDER",
+            "id": "8c2d9699-a97e-4509-98fe-91e15a1e41f6",
+            "events": [
+              {
+                "activation_frequency": "FREQUENT",
+                "id": "46728b22-2451-4a0b-8239-6a7617aee56a",
+                "type": "BOMB",
+                "event_data": {
+                  "duration_seconds": 600,
+                  "radius": 10,
+                  "damage": 100
+                }
+              },
+              {
+                "activation_frequency": "RARE",
+                "id": "8140926a-f36c-4701-a9dd-e22537280113",
+                "type": "AIRDROP",
+                "event_data": {
+                  "radius": 10
+                }
+              },
+              {
+                "type": "BOMBARDMENT",
+                "activation_frequency": "COMMON",
+                "event_data": {
+                  "duration_seconds": 600,
+                  "radius": 5,
+                  "damage": 50
+                },
+                "id": "aa374124-7897-4ec0-aa7c-3a7f0322d5c4"
+              }
+            ],
+            "abilities": [
+              {
+                "ability_type": "SNARE",
+                "number_uses": 2,
+                "recharge_time": 60,
+                "data": {
+                  "radius": 10,
+                  "trap_duration_seconds": 600
+                },
+                "id": "b0a88520-483c-45bf-81ef-ce0da38f1ea8",
+                "duration_seconds": null
+              }
+            ]
+          }
+        ]
     }
 }
+
 
 -------------------------------------------------
 
@@ -453,7 +931,7 @@ change_ready_status - запрос на изменение статуса гот
 
 create_zone - отрисовка зоны у клиента
 
-От сервера клиентам (запрос на отрисовку зоны у всех клиентов):
+От сервера клиентам (запрос на отрисовку зоны у всех клиентов, которые должны эту зону видеть):
 {
     "type": "create_zone",
     "data": {

@@ -1,17 +1,17 @@
 # timers.py
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Callable, Awaitable, Dict, Optional, Union
+from datetime import datetime
+from functools import partial
+from typing import Callable, Awaitable, Dict, Union
 import uuid
 from enum import Enum
-from database.models import GameZone, Game
-from sqlalchemy import select
+from database.models import GameZone, Game, Event, EventType, role_events, Role, Player
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timezone, timedelta
 
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,86 @@ class TimerManager:
         task = asyncio.create_task(_waiter())
         self._tasks[task_key] = task
         logger.debug(f"Scheduled timer {task_key} to fire in {delay:.1f}s")
+
+    async def reveal_event_schedule(
+            self,
+            game_id: uuid.UUID,
+            event: Event,  # событие типа REVEAL
+            end_time: datetime,
+            db: AsyncSession
+    ):
+        """
+        Периодически (каждую секунду) рассылает координаты всех игроков тем,
+        у кого роль поддерживает событие REVEAL.
+        """
+        # 1. Определяем ID ролей, у которых есть событие REVEAL
+        stmt_roles_with_reveal = (
+            select(Role.id)
+            .join(role_events, Role.id == role_events.c.role_id)
+            .join(Event, Event.id == role_events.c.event_id)
+            .where(
+                Event.type == EventType.REVEAL
+            )
+        )
+        result = await db.execute(stmt_roles_with_reveal)
+        reveal_role_ids = {row[0] for row in result.all()}  # set of UUID
+
+        if not reveal_role_ids:
+            # Если нет ролей с REVEAL, выходим (но такого не должно быть)
+            return
+
+        # 2. Получаем всех игроков игры и сразу определяем получателей
+        stmt = select(Player).where(
+            Player.game_id == game_id
+        )
+        players = (await self.db.execute(stmt)).scalars().all()
+        recipients = [p for p in players if p.role_id in reveal_role_ids]
+
+        if not recipients:
+            return
+
+        # 3. Длительность события в секундах (целое число)
+        now = datetime.now(timezone.utc)
+        total_seconds = max(0, int((end_time - now).total_seconds()))
+        if total_seconds <= 0:
+            return
+
+        # 4. Функция одного шага (отправка координат)
+        async def send_location_step(step: int):
+            # Получаем свежие координаты всех игроков (один запрос)
+            stmt_players = select(Player).where(Player.game_id == game_id)
+            result_players = await db.execute(stmt_players)
+            current_players = result_players.scalars().all()
+
+            # Формируем словарь координат
+            locations = {
+                str(p.id): {"lat": p.location_lat, "lng": p.location_lng}
+                for p in current_players
+            }
+
+            # Отправляем каждому получателю
+            for recipient in recipients:
+                await connection_manager.send_personal(
+                    message={
+                        "type": "reveal_event_players_locations",
+                        "data": locations
+                    },
+                    player_id=recipient.id
+                )
+
+            # Планируем следующий шаг, если не последний
+            if step < total_seconds:
+                await timer_manager.schedule(
+                    game_id=game_id,
+                    entity_type=TimerType.EVENT,
+                    entity_id=event.id,
+                    end_time=datetime.now(timezone.utc) + timedelta(seconds=1),
+                    callback=partial(send_location_step, step + 1)
+                )
+
+        # Запускаем первый шаг
+        await send_location_step(1)
+
 
     async def timer_to_hide(
             self,

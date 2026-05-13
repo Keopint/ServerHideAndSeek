@@ -2,16 +2,10 @@ import uuid
 from fastapi import HTTPException, Depends
 from typing import Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from sqlalchemy import select
-from database.models import Game, Role
 from services.game_management import GameService
 from database.db import get_db
 from fastapi import APIRouter
-from websocket_manager import connection_manager
-from sqlalchemy.orm import selectinload
-
-from services.player import PlayerService
+from services.websocket_manager import connection_manager
 
 game_router = APIRouter()
 
@@ -23,9 +17,11 @@ async def create_game(
     """Создать новую игру"""
     try:
         service = GameService(db)
-        game = await service.create_game(data)
-        game_with_relations = await service.get_game_with_relations(game.id)
-        return game_with_relations
+        game_with_relations, host_player_id = await service.create_game(data)
+        return {
+            "game": game_with_relations,
+            "host_player_id": host_player_id
+        }
     except HTTPException:
         raise
     except Exception as e:

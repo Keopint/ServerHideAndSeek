@@ -1,4 +1,5 @@
 # websocketRoutes.py
+import enum
 import json
 import uuid
 from fastapi import WebSocket, WebSocketDisconnect
@@ -6,9 +7,100 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 from database.models import GameStatus
 from database.db import get_db
-from services.player import PlayerService
 from services.game_management import GameService
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
+from services.player import PlayerService
+from sqlalchemy.inspection import inspect
+
+def to_dict(obj, visited=None):
+    """
+    Универсальная сериализация SQLAlchemy ORM объекта в dict.
+
+    Поддерживает:
+    - UUID -> str
+    - datetime -> isoformat
+    - Enum -> value
+    - relationship
+    - list relationship
+    - вложенные ORM объекты
+
+    Защита от циклических ссылок.
+    """
+
+    if visited is None:
+        visited = set()
+
+    # None
+    if obj is None:
+        return None
+
+    # primitive
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    # UUID
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+
+    # datetime
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+
+    # Enum
+    if isinstance(obj, enum.Enum):
+        return obj.value
+
+    # list / tuple / set
+    if isinstance(obj, (list, tuple, set)):
+        return [to_dict(item, visited) for item in obj]
+
+    # dict
+    if isinstance(obj, dict):
+        return {
+            key: to_dict(value, visited)
+            for key, value in obj.items()
+        }
+
+    # SQLAlchemy object
+    try:
+        mapper = inspect(obj)
+
+        # защита от рекурсии
+        obj_id = id(obj)
+
+        if obj_id in visited:
+            return None
+
+        visited.add(obj_id)
+
+        data = {}
+
+        # columns
+        for column in mapper.mapper.column_attrs:
+            key = column.key
+            value = getattr(obj, key)
+
+            data[key] = to_dict(value, visited)
+
+        # relationships
+        for relationship in mapper.mapper.relationships:
+            key = relationship.key
+
+            # не грузим lazy relation
+            if key not in obj.__dict__:
+                continue
+
+            value = getattr(obj, key)
+
+            data[key] = to_dict(value, visited)
+
+        return data
+
+    except Exception:
+        pass
+
+    # fallback
+    return str(obj)
 
 # Типы сообщений, которые клиент может отправлять
 CLIENT_MESSAGE_TYPES = {
@@ -55,9 +147,12 @@ async def handle_client_message(
         try:
             await player_service.change_player_role(game_id, player_id, new_role_id)
             await db.commit()
+
             await connection_manager.send_personal({
-                "type": "error",
-                "message": "Missing role_id"
+                "type": "role_changed",
+                "data": {
+                    "role_id": new_role_id
+                }
             }, player_id)
             return
         except ValueError as e:
@@ -124,7 +219,7 @@ async def handle_client_message(
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                 },
-                exclude_player=player_id
+                exclude_player=None
             )
         except ValueError as e:
             await connection_manager.send_personal({
@@ -134,7 +229,7 @@ async def handle_client_message(
 
     elif msg_type == "use_ability":
         game_service = GameService(db)
-        game_status = game_service.get_status(game_id)
+        game_status = await game_service.get_status(game_id)
 
         # Проверяем, активна ли игра
         if game_status != GameStatus.ACTIVE:
@@ -173,10 +268,12 @@ async def handle_client_message(
     elif msg_type == "get_game_state":
         # Отправить игроку актуальное состояние игры (зоны, игроки, эффекты)
         try:
-            state = await player_service.get_player_in_game(game_id, player_id)
+            game_service = GameService(db)
+            game_with_relation = await game_service.get_game_with_relations(game_id)
+            players_state = await player_service.get_player_in_game(game_id, player_id)
             await connection_manager.send_personal({
-                "type": "game_state",
-                "data": state
+                "type": game_with_relation,
+                "data": players_state
             }, player_id)
         except Exception as e:
             await connection_manager.send_personal({
@@ -190,125 +287,98 @@ async def handle_client_message(
             "message": f"Unknown message type: {msg_type}"
         }, player_id)
 
-
-# Функция для добавления WebSocket эндпоинта в приложение
+# регистрация websocket_endpoint
 def register_websocket_endpoint(app):
+    print("=== Registering WebSocket endpoint ===")
     @app.websocket("/ws/{game_id}/{player_id}")
-    async def websocket_endpoint(websocket: WebSocket, game_id: uuid.UUID, player_id: uuid.UUID):
-        # Получаем сессию БД
-        db_gen = get_db()
-        db = await anext(db_gen)  # получаем сессию из генератора
-
+    async def websocket_endpoint(websocket: WebSocket, game_id: str, player_id: str):
         try:
-            # Проверяем, что игра существует и игрок в ней участвует
-            game_service = GameService(db)
-            game = await game_service.get_game(game_id)
-            if game is None:
-                await websocket.close(code=4004, reason="Game not found")
-                return
+            game_id = uuid.UUID(game_id)
+            player_id = uuid.UUID(player_id)
 
-            player = await game_service.get_player_in_game(game_id, player_id)
-            if player is None:
-                await websocket.close(code=4001, reason="Player not in game")
-                return
+            db_gen = get_db()
+            db = await anext(db_gen)
 
-            # Принимаем соединение и регистрируем в менеджере
-            await connection_manager.connect(game_id, player_id, websocket)
+            try:
+                game_service = GameService(db)
+                game = await game_service.get_game(game_id)
+                if game is None:
+                    await websocket.close(code=4004, reason="Game not found")
+                    return
 
-            # Оповестить других игроков, что игрок вошел в сеть
-            await connection_manager.broadcast_to_game(
-                game_id,
-                {
-                    "type": "player_online",
-                    "player_id": str(player_id),
-                    "player_name": player.name,
-                    "role": player.role.value if player.role else None
-                },
-                exclude_player=player_id
-            )
+                player_service = PlayerService(db)
 
-            player_service = PlayerService(db)
+                player = await player_service.get_player_in_game(game_id, player_id)
+                if player is None:
+                    await websocket.close(code=4001, reason="Player not in game")
+                    return
 
-            # Отправить подключившемуся игроку информацию о его полях и начальное состояние игры
-            initial_state = await player_service.get_player_in_game(game_id, player_id)
-            game_data = await game_service.get_game_with_relations(game_id)
+                await connection_manager.connect(game_id, player_id, websocket)
 
-            await connection_manager.send_personal({
-                "type": "game_state",
-                "data": game_data
-            }, player_id)
+                # Оповестить других
+                await connection_manager.broadcast_to_game(
+                    game_id,
+                    {
+                        "type": "player_online",
+                        "player_id": str(player_id),
+                        "player_name": str(player.name),
+                        "role": str(player.role_ref.name) if player.role_ref else None  # исправлено
+                    },
+                    exclude_player=player_id
+                )
 
-            # Основной цикл приема сообщений
-            while True:
+                # Отправить начальное состояние (player_service уже создан)
+                initial_state = await player_service.get_player_in_game(game_id, player_id)
+                game_data = await game_service.get_game_with_relations(game_id)
+
+                await connection_manager.send_personal({
+                    "type": "websocket_connected_player",
+                    "data": {
+                        "player_data": to_dict(initial_state),
+                        "game_data": to_dict(game_data)
+                    }
+                }, player_id)
+
+                # Цикл сообщений
+                while True:
+                    try:
+                        raw_message = await websocket.receive_text()
+                        message = json.loads(raw_message)
+                        await handle_client_message(game_id, player_id, message, db)
+                    except json.JSONDecodeError:
+                        await connection_manager.send_personal({
+                            "type": "error",
+                            "message": "Invalid JSON"
+                        }, player_id)
+                    except WebSocketDisconnect:
+                        break  # просто выходим
+                    except Exception as e:
+                        print(f"[WS] Error processing message: {e}")
+                        await connection_manager.send_personal({
+                            "type": "error",
+                            "message": "Internal server error"
+                        }, player_id)
+
+            except Exception as e:
+                print(f"[WS] Unexpected error: {e}")
                 try:
-                    raw_message = await websocket.receive_text()
-                    message = json.loads(raw_message)
-                    await handle_client_message(game_id, player_id, message, db)
-                except json.JSONDecodeError:
-                    await connection_manager.send_personal({
-                        "type": "error",
-                        "message": "Invalid JSON"
-                    }, player_id)
-                except WebSocketDisconnect:
-                    break
+                    await websocket.close(code=1011, reason="Internal error")
+                except:
+                    pass
+            finally:
+                # Единоразовая очистка
+                connection_manager.disconnect(player_id)
+                try:
+                    await connection_manager.broadcast_to_game(
+                        game_id,
+                        {"type": "player_offline", "player_id": str(player_id)},
+                        exclude_player=player_id
+                    )
                 except Exception as e:
-                    print(f"[WS] Error processing message: {e}")
-                    await connection_manager.send_personal({
-                        "type": "error",
-                        "message": "Internal server error"
-                    }, player_id)
-
-        except WebSocketDisconnect:
-            # Убираем соединение из менеджера
-            connection_manager.disconnect(player_id)
-            # Оповещаем других игроков, что игрок офлайн
-            try:
-                await connection_manager.broadcast_to_game(
-                    game_id,
-                    {
-                        "type": "player_offline",
-                        "player_id": str(player_id)
-                    },
-                    exclude_player=player_id
-                )
-            except:
-                await connection_manager.send_personal({
-                    "type": "error",
-                    "message": f"Fail websocket close"
-                }, player_id)
-
+                    print(f"[WS] Failed to send offline: {e}")
+                await db.close()
         except Exception as e:
-            await connection_manager.send_personal({
-                "type": "error",
-                "message": f"[WS] Unexpected error: {e}"
-            }, player_id)
-
-            try:
-                await websocket.close(code=1011, reason="Internal error")
-            except:
-                await connection_manager.send_personal({
-                    "type": "error",
-                    "message": f"Fail websocket close"
-                }, player_id)
-
-        finally:
-            # Убираем соединение из менеджера
-            connection_manager.disconnect(player_id)
-            # Оповещаем других игроков, что игрок офлайн
-            try:
-                await connection_manager.broadcast_to_game(
-                    game_id,
-                    {
-                        "type": "player_offline",
-                        "player_id": str(player_id)
-                    },
-                    exclude_player=player_id
-                )
-            except:
-                await connection_manager.send_personal({
-                    "type": "error",
-                    "message": f"Fail websocket close"
-                }, player_id)
-            # Не забываем закрыть сессию БД, если она была получена через get_db
-            # (в текущей реализации get_db возвращает асинхронный генератор, его нужно аккуратно завершить)
-            await db.close()
+            print(f"!!! WebSocket fatal error: {e}")
+            import traceback
+            traceback.print_exc()
+            await websocket.close(code=1011, reason=str(e))

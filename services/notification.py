@@ -1,6 +1,6 @@
 import uuid
 from typing import Optional
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
 
 class NotificationService:
     """Сервис для отправки сообщений игрокам через WebSocket."""

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone, timedelta
 from services.timers import timer_manager, TimerType
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
 
 class GameService:
     def __init__(self, db: AsyncSession):

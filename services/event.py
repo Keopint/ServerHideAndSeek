@@ -1,4 +1,6 @@
 import uuid
+from sys import activate_stack_trampoline
+
 from database.models import Game, Player, ZoneType, GameZone, EventType, Event, role_events, GameEvent
 from sqlalchemy import select, Null
 from datetime import datetime, timezone, timedelta
@@ -6,6 +8,9 @@ from geopy.distance import distance
 from services.base import BaseService
 import random, math
 from zone import ZoneService
+from player import PlayerService
+from database.db import get_db
+from timers import timer_manager
 
 
 class EventService(BaseService):
@@ -83,24 +88,33 @@ class EventService(BaseService):
             )
         elif new_game_event.event_type == EventType.BOMBARDMENT:
 
-            lat, lng = await self.generate_point_in_circle(
-                game.safe_zone_center_lat,
-                game.safe_zone_center_lng,
-                game.safe_zone_radius
-            )
+            cnt = random.randint(3, 7)
 
-            zone_service = ZoneService(self.db)
+            for i in range(cnt):
+                lat, lng = await self.generate_point_in_circle(
+                    game.safe_zone_center_lat,
+                    game.safe_zone_center_lng,
+                    game.safe_zone_radius
+                )
 
-            await zone_service.create_zone(
+                zone_service = ZoneService(self.db)
+
+                await zone_service.create_zone(
+                    game_id=game_id,
+                    zone_type=ZoneType.WARNING,
+                    center_lat=lat,
+                    center_lng=lng,
+                    duration_seconds=duration_seconds,
+                    radius=event_data.get("radius"),
+                    damage=event_data.get("damage", 50)
+                )
+        elif new_game_event.event_type == EventType.REVEAL:
+            await timer_manager.reveal_event_schedule(
                 game_id=game_id,
-                zone_type=ZoneType.WARNING,
-                center_lat=lat,
-                center_lng=lng,
-                duration_seconds=duration_seconds,
-                radius=event_data.get("radius"),
-                damage=event_data.get("damage", 50)
+                event=event,
+                end_time=ends_at,
+                db=self.db
             )
-
 
     async def generate_point_in_circle(self, lat_center, lon_center, radius_meters):
         """

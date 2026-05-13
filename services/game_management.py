@@ -6,7 +6,7 @@ from database.models import Game, Player, Role, game_roles, ZoneType, Ability, r
     Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType, GameZone, VictoryConditionType
 from sqlalchemy import select
 from typing import Any, Dict, Type
-from datetime import datetime, timezone
+from datetime import datetime
 
 from services.timers import timer_manager
 from utils.generator import generate_game_join_code
@@ -15,7 +15,7 @@ from services.player import PlayerService
 from services.zone import ZoneService
 from datetime import timezone, timedelta
 
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
 
 
 class GameService(BaseService):
@@ -201,7 +201,8 @@ class GameService(BaseService):
             # 10. Фиксируем все изменения
             await self.db.commit()
             await self.db.refresh(game)
-            return game
+            game_with_relations = await self.get_game_with_relations(game.id)
+            return game_with_relations, host_player.id
 
         except Exception as e:
             await self.db.rollback()

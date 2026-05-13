@@ -1,5 +1,7 @@
 import uuid
 
+from sqlalchemy.orm import selectinload
+
 from database.models import (Game, Player, GameStatus, PlayerEffect,
                              EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role)
 from sqlalchemy import select
@@ -8,7 +10,7 @@ from services.zone import ZoneService
 from services.base import BaseService
 from services.timers import TimerType, timer_manager
 from utils.geo import calculate_distance, validate_coordinates
-from websocket_manager import connection_manager
+from services.websocket_manager import connection_manager
 
 
 class PlayerService(BaseService):
@@ -22,11 +24,11 @@ class PlayerService(BaseService):
         stmt = select(Player).where(
             Player.id == player_id,
             Player.game_id == game_id
-        )
+        ).options(selectinload(Player.role_ref))  # <-- обязательно
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_players_in_game(self, game_id: uuid.UUID) -> list[Player]:
+    async def get_players_in_game(self, game_id: uuid.UUID):
         stmt = select(Player).where(
             Player.game_id == game_id
         )
@@ -66,14 +68,14 @@ class PlayerService(BaseService):
         player.last_location_update = datetime.now(timezone.utc)
 
         # Проверка выхода за границы игровой зоны (если заданы)
-        if game.center_lat is not None and game.center_lng is not None and game.radius is not None:
-            distance = calculate_distance(lat, lng, game.center_lat, game.center_lng)
-            if distance > game.radius:
+        if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
+            distance = calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng)
+            if distance > game.safe_zone_radius:
                 # Наносим урон за выход
                 await self._apply_boundary_damage(player, game)
 
         zone_service = ZoneService(self.db)
-        await zone_service.check_player_in_zones()
+        await zone_service.check_player_in_zones(game_id, player_id)
 
         self.db.add(player)
         return player
