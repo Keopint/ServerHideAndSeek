@@ -5,6 +5,7 @@ from services.game_management import GameService
 from services.player import PlayerService
 from database.db import get_db
 from fastapi import APIRouter
+from utils.conversions import to_dict
 
 info_router = APIRouter()
 
@@ -17,7 +18,7 @@ async def get_game_endpoint(
     try:
         service = GameService(db)
         game_with_relations = await service.get_game_with_relations(game_id)
-        return game_with_relations
+        return to_dict(game_with_relations)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -71,7 +72,7 @@ async def get_game_player_info(
         player = await service.get_player_in_game(game_id, player_id)
 
         # JSON ответ
-        return player
+        return to_dict(player)
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

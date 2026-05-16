@@ -164,7 +164,7 @@ class TimerManager:
         await send_location_step(1)
 
 
-    async def timer_to_hide(
+    async def timer(
             self,
             game_id: uuid.UUID,
             end_time: datetime,

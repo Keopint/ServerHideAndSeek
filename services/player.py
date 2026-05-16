@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy.orm import selectinload
 
 from database.models import (Game, Player, GameStatus, PlayerEffect,
-                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role)
+                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role, PlayerDeathCauses)
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 from services.zone import ZoneService
@@ -133,7 +133,7 @@ class PlayerService(BaseService):
             player.health = 0
         self.db.add(player)
 
-    async def apply_damage(self, player_id: uuid.UUID, damage: int, ignore_shield: bool = False) -> Player:
+    async def apply_damage(self, game_id: uuid.UUID, player_id: uuid.UUID, damage: int, ignore_shield: bool = False) -> Player:
         """Наносит урон игроку, учитывая возможный щит."""
         player = await self.get_player(player_id)
         if not player or not player.is_alive:
@@ -146,10 +146,52 @@ class PlayerService(BaseService):
 
         player.health -= damage
         if player.health <= 0:
-            player.is_alive = False
             player.health = 0
+            await self.player_died(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER)
         self.db.add(player)
         return player
+
+    async def player_died(self, game_id: uuid.UUID, player_id: uuid.UUID, death_cause: PlayerDeathCauses, hunter_player_id: uuid.UUID = None):
+        # 1. Получаем игрока из БД
+        player = await self.db.get(Player, player_id)
+        if not player or not player.is_alive:
+            return
+
+        # 2. Обновляем состояние
+        player.is_alive = False
+        await self.db.commit()
+
+        # 3. Отправляем личное сообщение умершему игроку (он закроет сокет)
+        await connection_manager.send_personal(
+            {
+                "type": "you_died",
+                "data": {
+                    "reason": str(death_cause.value),
+                    "hunter_player_id": str(hunter_player_id) if hunter_player_id else None,
+                }
+            },
+            player_id
+        )
+
+        # 4. Оповещаем остальных игроков
+        message = {
+            "type": "player_died",
+            "data": {
+                "reason": str(death_cause.value),
+                "player_id": str(player_id),
+            }
+        }
+        if death_cause == PlayerDeathCauses.HUNTER_FOUND_PLAYER:
+            message["data"]["hunter_player_id"] = str(hunter_player_id)
+
+        await connection_manager.broadcast_to_game(
+            game_id,
+            message,
+            exclude_player=player_id
+        )
+
+        # 5. Удаляем соединение из менеджера (чтобы сервер не слал ему новые сообщения)
+        connection_manager.disconnect(player_id)
 
     async def has_active_shield(self, player_id: uuid.UUID) -> bool:
         now = datetime.now(timezone.utc)

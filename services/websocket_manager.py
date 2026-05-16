@@ -2,6 +2,9 @@
 import asyncio
 from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket
+from pyexpat.errors import messages
+
+from database.models import Player
 import uuid
 
 class ConnectionManager:
@@ -32,10 +35,10 @@ class ConnectionManager:
 
         print(f"[WS] Player {player_key} connected to game {game_key}")
 
-    def disconnect(self, player_id: uuid.UUID) -> None:
+    def disconnect(self, game_id: uuid.UUID, player_id: uuid.UUID) -> None:
         """Удалить соединение игрока."""
         player_key = str(player_id)
-        game_key = self._player_game.pop(player_key, None)
+        game_key = self._player_game.pop(str(game_id), None)
         if game_key and game_key in self._game_connections:
             self._game_connections[game_key].pop(player_key, None)
             self._game_players[game_key].discard(player_key)
@@ -43,6 +46,7 @@ class ConnectionManager:
             if not self._game_connections[game_key]:
                 del self._game_connections[game_key]
                 del self._game_players[game_key]
+
         print(f"[WS] Player {player_key} disconnected")
 
     async def broadcast_to_game(

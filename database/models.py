@@ -14,6 +14,9 @@ Base = declarative_base()
 # Enums as Python enums
 import enum
 
+class PlayerDeathCauses(enum.Enum):
+    HUNTER_FOUND_PLAYER = "HUNTER_FOUND_PLAYER"
+    HP_ARE_OVER = "HP_ARE_OVER"
 
 class GameStatus(enum.Enum):
     WAITING = "WAITING"
@@ -260,6 +263,7 @@ class Player(Base):
     trapped_until = Column(DateTime, nullable=True)
     player_data = Column(JSON, comment="additional attributes like inventory")
     is_player_ready = Column(Boolean, nullable=False, default=False)
+    is_online = Column(Boolean, nullable=False, default=False)
 
     game = relationship("Game", back_populates="players")
     abilities = relationship("PlayerAbility", back_populates="player", cascade="all, delete-orphan")

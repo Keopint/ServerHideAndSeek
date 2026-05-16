@@ -145,10 +145,10 @@ class ZoneService(BaseService):
         """Применяет эффект зоны к конкретному игроку."""
         if zone.type == ZoneType.DANGER:
             # Красная зона убивает, если нет щита
-            await player_service.apply_damage(player.id, zone.get("damage", 100), ignore_shield=False)
+            await player_service.apply_damage(player.game_id, player.id, zone.get("damage", 100), ignore_shield=False)
         elif zone.type == ZoneType.WARNING:
             if zone.target_player_id == player.id:
-                await player_service.apply_damage(player.id, zone.get("damage", 50), ignore_shield=False)
+                await player_service.apply_damage(player.game_id, player.id, zone.get("damage", 50), ignore_shield=False)
         elif zone.type in (ZoneType.TRAP, ZoneType.SNARE):
             # Капкан или ловушка — накладываем эффект обездвиживания
             trap_duration = zone.zone_data.get("trap_duration_seconds")

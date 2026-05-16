@@ -6,6 +6,7 @@ from services.game_management import GameService
 from database.db import get_db
 from fastapi import APIRouter
 from services.websocket_manager import connection_manager
+from utils.conversions import to_dict
 
 game_router = APIRouter()
 
@@ -76,18 +77,20 @@ async def connect_player(
         new_player = await service.add_player(game_code, data)
         game = await service.get_game_with_relations(new_player.game_id)
 
-        await connection_manager.broadcast_to_game({
-
-        },
+        await connection_manager.broadcast_to_game(
+            message={
+                "type": "player_connected",
+                "data": to_dict(new_player)
+            },
             game_id=game.id
         )
 
         return {
-            "game_id": "uuid-игры",
-            "player_id": new_player.id,
+            "game_id": str(game.id),
+            "player_id": str(new_player.id),
             "player_name": new_player.name,
             "game_status": "WAITING",
-            "ws_url": "ws://your-server.com/ws/{game_id}/{player_id}"
+            "ws_url": f"ws://your-server.com/ws/{str(game.id)}/{str(new_player.id)}"
         }
     except HTTPException:
         raise

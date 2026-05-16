@@ -1,106 +1,15 @@
 # websocketRoutes.py
-import enum
 import json
 import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from database.models import GameStatus
+from database.models import GameStatus, PlayerDeathCauses
 from database.db import get_db
 from services.game_management import GameService
 from services.websocket_manager import connection_manager
 from services.player import PlayerService
-from sqlalchemy.inspection import inspect
-
-def to_dict(obj, visited=None):
-    """
-    Универсальная сериализация SQLAlchemy ORM объекта в dict.
-
-    Поддерживает:
-    - UUID -> str
-    - datetime -> isoformat
-    - Enum -> value
-    - relationship
-    - list relationship
-    - вложенные ORM объекты
-
-    Защита от циклических ссылок.
-    """
-
-    if visited is None:
-        visited = set()
-
-    # None
-    if obj is None:
-        return None
-
-    # primitive
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-
-    # UUID
-    if isinstance(obj, uuid.UUID):
-        return str(obj)
-
-    # datetime
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-
-    # Enum
-    if isinstance(obj, enum.Enum):
-        return obj.value
-
-    # list / tuple / set
-    if isinstance(obj, (list, tuple, set)):
-        return [to_dict(item, visited) for item in obj]
-
-    # dict
-    if isinstance(obj, dict):
-        return {
-            key: to_dict(value, visited)
-            for key, value in obj.items()
-        }
-
-    # SQLAlchemy object
-    try:
-        mapper = inspect(obj)
-
-        # защита от рекурсии
-        obj_id = id(obj)
-
-        if obj_id in visited:
-            return None
-
-        visited.add(obj_id)
-
-        data = {}
-
-        # columns
-        for column in mapper.mapper.column_attrs:
-            key = column.key
-            value = getattr(obj, key)
-
-            data[key] = to_dict(value, visited)
-
-        # relationships
-        for relationship in mapper.mapper.relationships:
-            key = relationship.key
-
-            # не грузим lazy relation
-            if key not in obj.__dict__:
-                continue
-
-            value = getattr(obj, key)
-
-            data[key] = to_dict(value, visited)
-
-        return data
-
-    except Exception:
-        pass
-
-    # fallback
-    return str(obj)
+from utils.conversions import to_dict
 
 # Типы сообщений, которые клиент может отправлять
 CLIENT_MESSAGE_TYPES = {
@@ -111,6 +20,7 @@ CLIENT_MESSAGE_TYPES = {
     "change_ready_status",  # запрос на изменение статуса готовности
     "get_out_of_the_game",  # запрос на выбывание из игры
     "get_game_state",       # запрос полного состояния игры
+    "hunter_found_player"
 }
 
 async def handle_client_message(
@@ -140,18 +50,19 @@ async def handle_client_message(
             await connection_manager.send_personal({
                 "type": "role_changed",
                 "data": {
-                    "role_id": new_role_id
+                    "role_id": str(new_role_id)
                 }
             }, player_id)
             return
         try:
+            new_role_id = uuid.UUID(new_role_id)
             await player_service.change_player_role(game_id, player_id, new_role_id)
             await db.commit()
 
             await connection_manager.send_personal({
                 "type": "role_changed",
                 "data": {
-                    "role_id": new_role_id
+                    "role_id": str(new_role_id)
                 }
             }, player_id)
             return
@@ -272,8 +183,11 @@ async def handle_client_message(
             game_with_relation = await game_service.get_game_with_relations(game_id)
             players_state = await player_service.get_player_in_game(game_id, player_id)
             await connection_manager.send_personal({
-                "type": game_with_relation,
-                "data": players_state
+                "type": "game_state",
+                "data": {
+                    "game_info": to_dict(game_with_relation),
+                    "player_info":to_dict(players_state)
+                }
             }, player_id)
         except Exception as e:
             await connection_manager.send_personal({
@@ -281,11 +195,23 @@ async def handle_client_message(
                 "message": f"Failed to get state: {e}"
             }, player_id)
 
+    elif msg_type == "hunter_found_player":
+        try:
+            hunter_player_id = player_id
+            founded_player_id = uuid.UUID(data.get("founded_player_id"))
+            await player_service.player_died(game_id, founded_player_id, PlayerDeathCauses.HUNTER_FOUND_PLAYER, hunter_player_id)
+
+        except Exception as e:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": f"Failed to found player: {e}"
+            }, player_id)
     else:
         await connection_manager.send_personal({
             "type": "error",
             "message": f"Unknown message type: {msg_type}"
         }, player_id)
+
 
 # регистрация websocket_endpoint
 def register_websocket_endpoint(app):
@@ -367,8 +293,11 @@ def register_websocket_endpoint(app):
                     pass
             finally:
                 # Единоразовая очистка
-                connection_manager.disconnect(player_id)
+                connection_manager.disconnect(player_id=player_id)
                 try:
+                    player_service = PlayerService(db)
+                    player = await player_service.get_player_in_game(game_id, player_id)
+                    player.is_online = False
                     await connection_manager.broadcast_to_game(
                         game_id,
                         {"type": "player_offline", "player_id": str(player_id)},

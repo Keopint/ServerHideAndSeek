@@ -151,7 +151,8 @@ class GameService(BaseService):
                 is_alive=True,
                 location_lat=host_lat,
                 location_lng=host_lng,
-                last_location_update=datetime.now(timezone.utc)
+                last_location_update=datetime.now(timezone.utc),
+                is_online=False
             )
 
             self.db.add(host_player)
@@ -240,18 +241,26 @@ class GameService(BaseService):
             await zone_service.activate_safe_zone(game.id)
 
         now = datetime.now(timezone.utc)
-        duration_seconds = game.game_duration
+        duration_seconds = game.time_to_hide
 
-        await timer_manager.timer_to_hide(
+        await connection_manager.broadcast_to_game(
+            {
+                "type": "start_timer_to_hide",
+                "data": {
+                    "duration_seconds": duration_seconds
+                }
+            },
+            game_id=game_id
+        )
+
+        await timer_manager.timer(
             game_id=game_id,
             end_time=now + timedelta(seconds=duration_seconds),
-            callback=self._on_timer_finished_callback(game_id)
+            callback=self._on_hide_to_time_finished_callback(game_id)
         )
         return game
 
-    async def _on_timer_finished_callback(self, game_id: uuid.UUID):
-        game = await self.db.get(Game, game_id)
-        game.status = GameStatus.ACTIVE
+    async def _on_hide_to_time_finished_callback(self, game_id: uuid.UUID):
         await connection_manager.broadcast_to_game(
             {
                 "type": "timer_to_hide_finished",
@@ -259,6 +268,100 @@ class GameService(BaseService):
             },
             game_id=game_id
         )
+        await self.start_active_game(game_id)
+
+    async def start_active_game(self, game_id: uuid.UUID):
+        game = await self.db.get(Game, game_id)
+        game.status = GameStatus.ACTIVE
+        await self.db.commit()
+        await self.db.refresh(game)
+        now = datetime.now(timezone.utc)
+        duration_seconds = game.time_to_hide
+        await connection_manager.broadcast_to_game(
+            {
+                "type": "start_timer_for_game",
+                "data": {
+                    "duration_seconds": duration_seconds
+                }
+            },
+            game_id=game_id
+        )
+        await timer_manager.timer(
+            game_id=game_id,
+            end_time=now + timedelta(seconds=duration_seconds),
+            callback=self._on_game_timer_finished_callback(game_id)
+        )
+        return game
+
+    async def _on_game_timer_finished_callback(self, game_id: uuid.UUID):
+        player_service = PlayerService(self.db)
+        players = await player_service.get_players_in_game(game_id)
+
+        cnt_hiders = 0
+        for player in players:
+            role = await self.db.get(Role, player.role_id)
+            if player.is_alive and role.victory_condition == VictoryConditionType.HIDER:
+                cnt_hiders += 1
+
+    async def send_finish(self, player: Player, is_victory: bool):
+        connection_manager.send_personal(
+            player_id=player.id,
+            message={
+                "type": "game_finished",
+                "data": {
+                    "is_victory": is_victory
+                }
+            }
+        )
+
+    async def finish_game(self, game_id: uuid.UUID):
+        game = await self.db.get(Game, game_id)
+        game.status = GameStatus.FINISHED
+
+        connection_manager.broadcast_to_game(
+            game_id=game_id,
+            message={
+                "type": "game_finished",
+                "data": {}
+            }
+        )
+
+        player_service = PlayerService(self.db)
+        players = await player_service.get_players_in_game(game_id)
+
+        cnt_hiders = 0
+        for player in players:
+            role = await self.db.get(Role, player.role_id)
+            if player.is_alive and role.victory_condition == VictoryConditionType.HIDER:
+                cnt_hiders += 1
+
+        stmt = (select(Player).join(Role, Player.role_id == Role.id)
+        .where(
+            Player.game_id == game_id,
+            Role.victory_condition == VictoryConditionType.HIDER
+        ))
+        result = await self.db.execute(stmt)
+        hiders = result.scalars().all()
+
+        stmt = (select(Player).join(Role, Player.role_id == Role.id)
+        .where(
+            Player.game_id == game_id,
+            Role.victory_condition == VictoryConditionType.SEEKER
+        ))
+        result = await self.db.execute(stmt)
+        seekers = result.scalars().all()
+
+        if cnt_hiders > 0:
+            for player in hiders:
+               await self.send_finish(player, True)
+            for player in seekers:
+                await self.send_finish(player, False)
+        else:
+            for player in hiders:
+                await self.send_finish(player, False)
+            for player in seekers:
+                await self.send_finish(player, True)
+
         await self.db.commit()
         await self.db.refresh(game)
 
@@ -300,6 +403,7 @@ class GameService(BaseService):
             is_alive=True,
             location_lat=data["player_location_lat"],
             location_lng=data["player_location_lng"],
+            is_online = False,
             last_location_update=datetime.now(timezone.utc)
         )
         self.db.add(new_player)
