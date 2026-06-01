@@ -17,6 +17,7 @@ import enum
 class PlayerDeathCauses(enum.Enum):
     HUNTER_FOUND_PLAYER = "HUNTER_FOUND_PLAYER"
     HP_ARE_OVER = "HP_ARE_OVER"
+    LEAVE_TRAP = "LEAVE_TRAP"
 
 class GameStatus(enum.Enum):
     WAITING = "WAITING"
@@ -238,9 +239,7 @@ class Game(Base):
         secondary=game_roles,
         back_populates="games"
     )
-    # Исправлено: вместо несуществующего Effect используем GameEvent и PlayerEffect (если нужно)
-    # Но так как ранее был 'effects', я его убираю, так как класс Effect отсутствует.
-    # При желании можно добавить relationship для GameEvent и GameZone.
+
     game_zones = relationship("GameZone", back_populates="game", foreign_keys="GameZone.game_id", cascade="all, delete-orphan")
     game_events = relationship("GameEvent", back_populates="game", cascade="all, delete-orphan")
     snapshots = relationship("GameStateSnapshot", back_populates="game", cascade="all, delete-orphan")

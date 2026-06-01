@@ -38,15 +38,14 @@ class ConnectionManager:
     def disconnect(self, game_id: uuid.UUID, player_id: uuid.UUID) -> None:
         """Удалить соединение игрока."""
         player_key = str(player_id)
-        game_key = self._player_game.pop(str(game_id), None)
-        if game_key and game_key in self._game_connections:
+        game_key = str(game_id)
+        if game_key in self._game_connections:
             self._game_connections[game_key].pop(player_key, None)
             self._game_players[game_key].discard(player_key)
-            # Если в игре не осталось соединений, можно удалить пустой словарь
             if not self._game_connections[game_key]:
                 del self._game_connections[game_key]
                 del self._game_players[game_key]
-
+        self._player_game.pop(player_key, None)
         print(f"[WS] Player {player_key} disconnected")
 
     async def broadcast_to_game(
@@ -76,7 +75,7 @@ class ConnectionManager:
             except Exception as e:
                 print(f"[WS] Broadcast failed to {player_key}: {e}")
                 # Опционально: можно удалить проблемное соединение
-                self.disconnect(uuid.UUID(player_key))
+                self.disconnect(game_id, uuid.UUID(player_key))
 
     async def send_personal(self, message: Any, player_id: uuid.UUID) -> bool:
         """Отправить сообщение конкретному игроку."""
@@ -95,7 +94,7 @@ class ConnectionManager:
             return True
         except Exception as e:
             print(f"[WS] Failed to send to {player_key}: {e}")
-            self.disconnect(player_id)
+            self.disconnect(uuid.UUID(game_key), player_id)
             return False
 
     def get_connected_players(self, game_id: uuid.UUID) -> Set[str]:

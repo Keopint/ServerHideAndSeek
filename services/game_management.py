@@ -229,7 +229,7 @@ class GameService(BaseService):
         if not all_is_ready:
             raise ValueError("Not all players active")
 
-        game = await self.db.get(Game, game_id)
+        game = await self.get_game_with_relations(game_id)
         game.status = GameStatus.HIDE_TIME
 
         await self.db.commit()
@@ -257,6 +257,13 @@ class GameService(BaseService):
             game_id=game_id,
             end_time=now + timedelta(seconds=duration_seconds),
             callback=self._on_hide_to_time_finished_callback(game_id)
+        )
+        events = game.game_events
+        await timer_manager.start_events(
+            game_id=game_id,
+            events=events,
+            end_time=now + timedelta(seconds=duration_seconds),
+            db=self.db
         )
         return game
 

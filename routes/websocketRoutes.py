@@ -31,6 +31,13 @@ async def handle_client_message(
 ):
     """Обработчик входящих сообщений от клиента."""
 
+    if isinstance(message, str):
+        print(f"Received string instead of dict: {message}")
+        try:
+            message = json.loads(message)
+        except:
+            return
+
     msg_type = message.get("type")
     data = message.get("data", {})
     player_service = PlayerService(db)
@@ -44,32 +51,48 @@ async def handle_client_message(
             }
         }, player_id)
 
+
     elif msg_type == "change_role":
         new_role_id = data.get("role_id")
+        print(f"[DEBUG] change_role: role_id={new_role_id}, game_id={game_id}, player_id={player_id}")
         if new_role_id is None:
             await connection_manager.send_personal({
-                "type": "role_changed",
-                "data": {
-                    "role_id": str(new_role_id)
-                }
+                "type": "error",
+                "data": {"message": "Missing role_id"}
             }, player_id)
             return
         try:
             new_role_id = uuid.UUID(new_role_id)
+            print("[DEBUG] About to call change_player_role")
             await player_service.change_player_role(game_id, player_id, new_role_id)
             await db.commit()
+            print("[DEBUG] change_player_role succeeded")
 
+            # Оповестить самого игрока
             await connection_manager.send_personal({
                 "type": "role_changed",
-                "data": {
-                    "role_id": str(new_role_id)
-                }
+                "data": {"role_id": str(new_role_id)}
             }, player_id)
-            return
-        except ValueError as e:
+
+            # Оповестить всех остальных
+            await connection_manager.broadcast_to_game(
+                game_id,
+                {
+                    "type": "player_role_changed",
+                    "data": {
+                        "player_id": str(player_id),
+                        "role_id": str(new_role_id)
+                    }
+                },
+                exclude_player=player_id
+            )
+        except Exception as e:
+            print(f"[ERROR] change_role exception: {e}")
+            import traceback
+            traceback.print_exc()
             await connection_manager.send_personal({
                 "type": "error",
-                "message": str(e)
+                "data": {"message": str(e)}
             }, player_id)
 
     elif msg_type == "change_ready_status":
@@ -157,9 +180,10 @@ async def handle_client_message(
                 "message": "Missing ability_type"
             }, player_id)
             return
-
+        center_lat = data.get("center_lat", None)
+        center_lng = data.get("center_lng", None)
         try:
-            result = await player_service.use_ability(game_id, player_id, ability_type)
+            result = await player_service.use_ability(game_id, player_id, ability_type, center_lat, center_lng)
             await db.commit()
             # О результате использования способности сервис сам разошлет уведомления через TimerManager
             # Можно также сразу подтвердить игроку
@@ -181,12 +205,12 @@ async def handle_client_message(
         try:
             game_service = GameService(db)
             game_with_relation = await game_service.get_game_with_relations(game_id)
-            players_state = await player_service.get_player_in_game(game_id, player_id)
+            player_state = await player_service.get_player_in_game(game_id, player_id)
             await connection_manager.send_personal({
-                "type": "game_state",
+                "type": "websocket_connected_player",
                 "data": {
-                    "game_info": to_dict(game_with_relation),
-                    "player_info":to_dict(players_state)
+                    "player_data": to_dict(player_state),
+                    "game_data": to_dict(game_with_relation)
                 }
             }, player_id)
         except Exception as e:
@@ -257,6 +281,10 @@ def register_websocket_endpoint(app):
                 initial_state = await player_service.get_player_in_game(game_id, player_id)
                 game_data = await game_service.get_game_with_relations(game_id)
 
+                print(f"[DEBUG] Sending websocket_connected_player to {player_id}")
+                print(f"[DEBUG] player_data: {to_dict(initial_state)}")
+                print(f"[DEBUG] game_data: {to_dict(game_data)}")
+
                 await connection_manager.send_personal({
                     "type": "websocket_connected_player",
                     "data": {
@@ -268,8 +296,8 @@ def register_websocket_endpoint(app):
                 # Цикл сообщений
                 while True:
                     try:
-                        raw_message = await websocket.receive_text()
-                        message = json.loads(raw_message)
+                        message = await websocket.receive_json()  # ← уже dict
+                        print(f"[DEBUG] Message: {message}")
                         await handle_client_message(game_id, player_id, message, db)
                     except json.JSONDecodeError:
                         await connection_manager.send_personal({
@@ -277,9 +305,11 @@ def register_websocket_endpoint(app):
                             "message": "Invalid JSON"
                         }, player_id)
                     except WebSocketDisconnect:
-                        break  # просто выходим
+                        break
                     except Exception as e:
                         print(f"[WS] Error processing message: {e}")
+                        import traceback
+                        traceback.print_exc()
                         await connection_manager.send_personal({
                             "type": "error",
                             "message": "Internal server error"
@@ -293,7 +323,7 @@ def register_websocket_endpoint(app):
                     pass
             finally:
                 # Единоразовая очистка
-                connection_manager.disconnect(player_id=player_id)
+                connection_manager.disconnect(game_id, player_id)
                 try:
                     player_service = PlayerService(db)
                     player = await player_service.get_player_in_game(game_id, player_id)

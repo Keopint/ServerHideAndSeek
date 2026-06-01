@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from geopy.distance import distance
 from services.base import BaseService
 import random, math
-from zone import ZoneService
+from services.zone import ZoneService
 from player import PlayerService
 from database.db import get_db
 from timers import timer_manager
@@ -105,7 +105,7 @@ class EventService(BaseService):
                     center_lat=lat,
                     center_lng=lng,
                     duration_seconds=duration_seconds,
-                    radius=event_data.get("radius"),
+                    radius=event_data.get("radius", 10),
                     damage=event_data.get("damage", 50)
                 )
         elif new_game_event.event_type == EventType.REVEAL:

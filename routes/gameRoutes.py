@@ -90,7 +90,7 @@ async def connect_player(
             "player_id": str(new_player.id),
             "player_name": new_player.name,
             "game_status": "WAITING",
-            "ws_url": f"ws://your-server.com/ws/{str(game.id)}/{str(new_player.id)}"
+            "ws_url": f"ws://shrunk-scrambler-gauze.ngrok-free.dev/ws/{str(game.id)}/{str(new_player.id)}"
         }
     except HTTPException:
         raise

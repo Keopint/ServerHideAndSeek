@@ -3,12 +3,14 @@ import uuid
 from sqlalchemy.orm import selectinload
 
 from database.models import (Game, Player, GameStatus, PlayerEffect,
-                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role, PlayerDeathCauses)
+                             EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role, PlayerDeathCauses,
+                             GameZone)
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 from services.zone import ZoneService
 from services.base import BaseService
 from services.timers import TimerType, timer_manager
+from utils.conversions import to_dict
 from utils.geo import calculate_distance, validate_coordinates
 from services.websocket_manager import connection_manager
 
@@ -34,6 +36,21 @@ class PlayerService(BaseService):
         )
         players = (await self.db.execute(stmt)).scalars().all()
         return players
+
+    async def get_active_player_effects(self, player_id: uuid.UUID) -> list[PlayerEffect]:
+        """
+        Возвращает список активных эффектов для указанного игрока.
+        Активными считаются эффекты с is_active=True, starts_at <= now <= ends_at.
+        """
+        now = datetime.now(timezone.utc)
+        stmt = select(PlayerEffect).where(
+            PlayerEffect.player_id == player_id,
+            PlayerEffect.is_active == True,
+            PlayerEffect.starts_at <= now,
+            PlayerEffect.ends_at > now
+        )
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
 
     async def update_player_location(
         self,
@@ -68,11 +85,49 @@ class PlayerService(BaseService):
         player.last_location_update = datetime.now(timezone.utc)
 
         # Проверка выхода за границы игровой зоны (если заданы)
+
         if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
             distance = calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng)
             if distance > game.safe_zone_radius:
                 # Наносим урон за выход
                 await self._apply_boundary_damage(player, game)
+        if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
+            player_active_effects = await self.get_active_player_effects(player_id)
+            has_trap_effect = any(
+                effect.type in (EffectType.TRAPPED, EffectType.ROOTED) for effect in player_active_effects)
+
+            # 2. Активные зоны-ловушки (TRAP или SNARE)
+            now = datetime.now(timezone.utc)
+            trap_zones_query = select(GameZone).where(
+                GameZone.game_id == game_id,
+                GameZone.type.in_([ZoneType.TRAP, ZoneType.SNARE]),
+                GameZone.is_active == True,
+                GameZone.starts_at <= now,
+                (GameZone.ends_at == None) | (GameZone.ends_at > now)
+            )
+            trap_zones = (await self.db.execute(trap_zones_query)).scalars().all()
+
+            # Проверяем, находится ли игрок в любой из этих зон
+            is_in_trap_zone = False
+            for zone in trap_zones:
+                distance = calculate_distance(player.location_lat, player.location_lng,
+                                              zone.center_lat, zone.center_lng)
+                if distance <= zone.radius:
+                    is_in_trap_zone = True
+                    break
+
+            # 3. Если игрок не защищён ни эффектом, ни нахождением в зоне-ловушке
+            if not has_trap_effect and not is_in_trap_zone:
+                # Проверка выхода за границу безопасной зоны
+                distance_to_safe_center = calculate_distance(
+                    player.location_lat, player.location_lng,
+                    game.safe_zone_center_lat, game.safe_zone_center_lng
+                )
+                if distance_to_safe_center > game.safe_zone_radius:
+                    # Игрок выбывает
+                    player.is_alive = False
+                    player_service = PlayerService(self.db)
+                    await player_service.player_died(game_id, player_id, death_cause=PlayerDeathCauses.LEAVE_TRAP)
 
         zone_service = ZoneService(self.db)
         await zone_service.check_player_in_zones(game_id, player_id)
@@ -84,19 +139,53 @@ class PlayerService(BaseService):
             self,
             game_id: uuid.UUID,
             player_id: uuid.UUID,
-            role_id: uuid.UUID
+            new_role_id: uuid.UUID
     ):
+        # Получаем игрока с предзагрузкой (опционально)
+        player = await self.get_player_in_game(game_id, player_id)
+        if not player:
+            raise ValueError("Player not found in game")
+        # Проверяем существование новой роли
+        role = await self.db.get(Role, new_role_id)
+        if not role:
+            raise ValueError("Role not found")
+        # Обновляем роль
+        player.role_id = new_role_id
+        # Дополнительно можно обновить здоровье в соответствии с ролью
+        player.health = role.health
+        await self.db.commit()
+
+    async def add_ability(
+            self,
+            game_id: uuid.UUID,
+            player_id: uuid.UUID,
+            ability_id: uuid.UUID,
+            number_uses: int = 1
+    ) -> PlayerAbility:
+        """
+        Добавляет способность игроку.
+        Возвращает созданный объект PlayerAbility.
+        """
+        ability = await self.db.get(Ability, ability_id)
+        # Проверяем существование игрока
         player = await self.get_player_in_game(game_id, player_id)
         if not player:
             raise ValueError(f"Player {player_id} not found in game {game_id}")
 
-        role = await self.db.get(Role, role_id)
-        if not role:
-            raise ValueError(f"Role {role_id} not found in game {game_id}")
+        # Проверяем существование способности
+        ability = await self.db.get(Ability, ability_id)
+        if not ability:
+            raise ValueError(f"Ability {ability_id} not found")
 
-        player.role_id = role_id
-        self.db.add(player)
-        return player
+        # Создаём запись о способности игрока
+        player_ability = PlayerAbility(
+            player_id=player_id,
+            ability_id=ability_id,
+            number_uses_left=number_uses
+        )
+        self.db.add(player_ability)
+        await self.db.flush()
+        return player_ability
 
     async def change_ready_status(
             self,
@@ -191,7 +280,7 @@ class PlayerService(BaseService):
         )
 
         # 5. Удаляем соединение из менеджера (чтобы сервер не слал ему новые сообщения)
-        connection_manager.disconnect(player_id)
+        connection_manager.disconnect(game_id, player_id)
 
     async def has_active_shield(self, player_id: uuid.UUID) -> bool:
         now = datetime.now(timezone.utc)

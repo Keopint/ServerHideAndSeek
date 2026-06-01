@@ -3,9 +3,11 @@ import asyncio
 import logging
 from datetime import datetime
 from functools import partial
+import random
 from typing import Callable, Awaitable, Dict, Union
 import uuid
 from enum import Enum
+from database.db import get_db
 from database.models import GameZone, Game, Event, EventType, role_events, Role, Player
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -170,7 +172,7 @@ class TimerManager:
             end_time: datetime,
             callback: Callable[[], Awaitable[None]]
     ):
-        type_str = "TIMER_TO_HIDE"
+        type_str = "TIMER"
         task_key = f"{game_id}:{type_str}"
 
         await self.cancel(task_key)
@@ -204,6 +206,61 @@ class TimerManager:
         task = asyncio.create_task(_waiter())
         self._tasks[task_key] = task
         logger.debug(f"Scheduled timer {task_key} to fire in {delay:.1f}s")
+
+    async def start_events(
+            self,
+            game_id: uuid.UUID,
+            events,
+            end_time: datetime,
+            db: AsyncSession
+    ):
+        type_str = "Event_generation"
+        task_key = f"{game_id}:{type_str}"
+
+        await self.cancel(task_key)
+
+        total_duration = (end_time - datetime.now(timezone.utc)).total_seconds()
+        steps = max(1, int((total_duration - 90) // 30))
+
+        # Веса для частоты активации
+        frequency_weights = {
+            "FREQUENT": 0.7,
+            "COMMON": 0.2,
+            "RARE": 0.1
+        }
+
+        async def generate_event(step_number: int, remaining_steps: int):
+            # Выбираем случайное событие на основе весов
+            chosen_event = None
+            rand_val = random.random()
+            cumulative = 0.0
+            for event in events:
+                weight = frequency_weights.get(event.activation_frequency, 0.1)
+                cumulative += weight
+                if rand_val <= cumulative:
+                    chosen_event = event
+                    break
+
+            if chosen_event:
+                # Активируем выбранное событие
+                from services.event import EventService
+                event_service = EventService(db)
+                await event_service.activate_event(game_id, chosen_event.type)
+
+            # Если есть ещё шаги, планируем следующий через 30 секунд
+            if remaining_steps > 1:
+                await self.timer(
+                    game_id=game_id,
+                    end_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+                    callback=lambda: generate_event(step_number + 1, remaining_steps - 1)
+                )
+
+        # события начнут генерироваться через 60 секунд
+        await self.timer(
+            game_id=game_id,
+            end_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+            callback=lambda: generate_event(1, steps)
+        )
 
     async def safe_zone_schedule(
         self,
