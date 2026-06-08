@@ -8,39 +8,26 @@ from geopy.distance import distance
 from services.base import BaseService
 import random, math
 from services.zone import ZoneService
-from player import PlayerService
-from database.db import get_db
-from timers import timer_manager
+from services.timers import timer_manager
 
 
 class EventService(BaseService):
     """Сервис для создания, проверки и завершения событий"""
 
-    async def activate_event(self, game_id: uuid.UUID, event_type: EventType):
-        stmt = select(Game).where(Game.id == game_id)
-        result = await self.db.execute(stmt)
-        game = result.scalar_one_or_none()
-        if not game:
-            raise ValueError(f"Game {game_id} not found")
+    async def activate_event(self, game_id: uuid.UUID, event: Event):
+        """Активирует событие (создаёт зоны, рассылает уведомления)"""
 
-        # Получаем данные события из таблицы Event
-        stmt = select(Event).join(role_events).where(
-            role_events.c.game_id == game_id,
-            Event.type == event_type
-        )
-        event = (await self.db.execute(stmt)).scalar_one_or_none()
-        if not event:
-            raise ValueError(f"Event {event_type} not found for game {game_id}")
-
+        game = await self.db.get(Game, game_id)
         event_data = event.event_data
         now = datetime.now(timezone.utc)
 
-        duration_seconds = event_data.get("duration_seconds")
+        duration_seconds = event_data.get("duration_seconds", None)
         ends_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
 
+        # Создаём запись в GameEvent (если нужна)
         new_game_event = GameEvent(
             game_id=game_id,
-            event_type=event_type,
+            event_type=event.type,
             starts_at=now,
             ends_at=ends_at,
             event_data=event_data

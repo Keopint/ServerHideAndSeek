@@ -199,8 +199,7 @@ class GameEvent(Base):
     event_type = Column(Enum(EventType))
     starts_at = Column(DateTime(timezone=True))
     ends_at = Column(DateTime(timezone=True), nullable=True)
-
-    game = relationship("Game", back_populates="game_events")
+    event_data = Column(JSON, nullable=False, default={})
 
 class PlayerAbility(Base):
     __tablename__ = "player_abilities"
@@ -240,8 +239,9 @@ class Game(Base):
         back_populates="games"
     )
 
+    events = relationship("Event", back_populates="game", cascade="all, delete-orphan")
+
     game_zones = relationship("GameZone", back_populates="game", foreign_keys="GameZone.game_id", cascade="all, delete-orphan")
-    game_events = relationship("GameEvent", back_populates="game", cascade="all, delete-orphan")
     snapshots = relationship("GameStateSnapshot", back_populates="game", cascade="all, delete-orphan")
 
     # Исправлено: current_safe_zone ссылается на GameZone
@@ -296,6 +296,7 @@ class Event(Base):
     __tablename__ = "events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID, ForeignKey("games.id"))
     type = Column(Enum(EventType), nullable=False)
     activation_frequency = Column(Enum(ActivationFrequencyType), nullable=False)
     event_data = Column(JSON, nullable=False, default={})
@@ -305,6 +306,8 @@ class Event(Base):
         secondary=role_events,
         back_populates="events"
     )
+
+    game = relationship("Game", back_populates="events")
 
 class GameStateSnapshot(Base):
     __tablename__ = "game_state_snapshots"

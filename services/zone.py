@@ -75,7 +75,7 @@ class ZoneService(BaseService):
         self.db.add(zone)
         await self.db.flush()  # получаем zone.id
 
-        connection_manager.broadcast_to_game(
+        await connection_manager.broadcast_to_game(
             game_id=game_id,
             message={
                 "type": "create_zone",
@@ -168,7 +168,9 @@ class ZoneService(BaseService):
             strong_ability_types = [AbilityType.SAFE_MANSION, AbilityType.SCAN, AbilityType.TRAP]
             chosen_type = random.choice(strong_ability_types)
             # Ищем соответствующую способность в БД (по ability_type)
-            stmt = select(Ability).where(Ability.ability_type == chosen_type)
+            stmt = select(Ability).where(
+                Ability.ability_type == chosen_type
+            )
             result = await self.db.execute(stmt)
             ability = result.scalar_one_or_none()
             if not ability:
@@ -192,7 +194,6 @@ class ZoneService(BaseService):
                 "type": "airdrop_collected",
                 "data": {"ability": to_dict(ability)}
             }, player.id)
-            await player_service.add_ability(player.game_id, player.id, ability.id)
 
         elif zone.type in (ZoneType.TRAP, ZoneType.SNARE):
             # Капкан или ловушка — накладываем эффект обездвиживания

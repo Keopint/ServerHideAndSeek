@@ -163,10 +163,9 @@ class PlayerService(BaseService):
             number_uses: int = 1
     ) -> PlayerAbility:
         """
-        Добавляет способность игроку.
-        Возвращает созданный объект PlayerAbility.
-        """
-        ability = await self.db.get(Ability, ability_id)
+            Добавляет способность игроку или увеличивает количество использований, если способность уже есть.
+            Возвращает существующий или созданный объект PlayerAbility.
+            """
         # Проверяем существование игрока
         player = await self.get_player_in_game(game_id, player_id)
         if not player:
@@ -177,15 +176,31 @@ class PlayerService(BaseService):
         if not ability:
             raise ValueError(f"Ability {ability_id} not found")
 
-        # Создаём запись о способности игрока
-        player_ability = PlayerAbility(
-            player_id=player_id,
-            ability_id=ability_id,
-            number_uses_left=number_uses
+        # Ищем существующую запись PlayerAbility для этого игрока и способности
+        from sqlalchemy import select
+        stmt = select(PlayerAbility).where(
+            PlayerAbility.player_id == player_id,
+            PlayerAbility.ability_id == ability_id
         )
-        self.db.add(player_ability)
-        await self.db.flush()
-        return player_ability
+        result = await self.db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            # Если уже есть, увеличиваем количество использований
+            existing.number_uses_left += number_uses
+            self.db.add(existing)
+            await self.db.flush()
+            return existing
+        else:
+            # Создаём новую запись
+            player_ability = PlayerAbility(
+                player_id=player_id,
+                ability_id=ability_id,
+                number_uses_left=number_uses
+            )
+            self.db.add(player_ability)
+            await self.db.flush()
+            return player_ability
 
     async def change_ready_status(
             self,
@@ -238,6 +253,15 @@ class PlayerService(BaseService):
             player.health = 0
             await self.player_died(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER)
         self.db.add(player)
+        await connection_manager.send_personal(
+            player_id=player_id,
+            message={
+                "type": "apply_damage",
+                "data": {
+                    "damage": damage
+                }
+            }
+        )
         return player
 
     async def player_died(self, game_id: uuid.UUID, player_id: uuid.UUID, death_cause: PlayerDeathCauses, hunter_player_id: uuid.UUID = None):

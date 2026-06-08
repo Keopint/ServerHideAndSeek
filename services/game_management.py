@@ -119,6 +119,7 @@ class GameService(BaseService):
                 event_enum = EventType(event_type)
                 activation_frequency_type = ActivationFrequencyType(event_data["activation_frequency"])
                 new_event = Event(
+                    game_id = game.id,
                     type = event_enum,
                     activation_frequency = activation_frequency_type,
                     event_data = event_data.get("addition_data", {})
@@ -126,7 +127,7 @@ class GameService(BaseService):
                 self.db.add(new_event)
                 await self.db.flush()
 
-                for role_name, events_list in roles_events.items():
+                for role_name, role_list in game_roles_dict.items():
                     stmt = select(Role).join(game_roles, Role.id == game_roles.c.role_id).where(
                         game_roles.c.game_id == game.id,
                         Role.name == role_name
@@ -212,8 +213,9 @@ class GameService(BaseService):
     async def get_game_with_relations(self, game_id: uuid.UUID):
         stmt = select(Game).where(Game.id == game_id).options(
             selectinload(Game.roles).selectinload(Role.abilities),
-            selectinload(Game.roles).selectinload(Role.events)
-        )
+            selectinload(Game.events),
+            selectinload(Game.players)
+        ).execution_options(populate_existing=True)
         result = await self.db.execute(stmt)
         game_with_relations = result.scalar_one()
         return game_with_relations
@@ -236,29 +238,39 @@ class GameService(BaseService):
         await self.db.refresh(game)
 
         from database.db import get_db
-        with get_db as db:
+        async for db in get_db():
             zone_service = ZoneService(db)
             await zone_service.activate_safe_zone(game.id)
+            break
 
         now = datetime.now(timezone.utc)
         duration_seconds = game.time_to_hide
 
         await connection_manager.broadcast_to_game(
-            {
+            game_id=game_id,
+            message={
                 "type": "start_timer_to_hide",
                 "data": {
                     "duration_seconds": duration_seconds
                 }
-            },
-            game_id=game_id
+            }
         )
 
         await timer_manager.timer(
             game_id=game_id,
             end_time=now + timedelta(seconds=duration_seconds),
-            callback=self._on_hide_to_time_finished_callback(game_id)
+            callback= lambda: self._on_hide_to_time_finished_callback(game_id)
         )
-        events = game.game_events
+        stmt = (
+            select(Event)
+            .join(role_events, Event.id == role_events.c.event_id)
+            .join(Role, Role.id == role_events.c.role_id)
+            .join(game_roles, Role.id == game_roles.c.role_id)
+            .where(game_roles.c.game_id == game_id)
+            .distinct()
+        )
+        result = await self.db.execute(stmt)
+        events = result.scalars().all()
         await timer_manager.start_events(
             game_id=game_id,
             events=events,
@@ -269,11 +281,11 @@ class GameService(BaseService):
 
     async def _on_hide_to_time_finished_callback(self, game_id: uuid.UUID):
         await connection_manager.broadcast_to_game(
-            {
+            game_id=game_id,
+            message={
                 "type": "timer_to_hide_finished",
                 "data": {}
-            },
-            game_id=game_id
+            }
         )
         await self.start_active_game(game_id)
 
@@ -285,7 +297,7 @@ class GameService(BaseService):
         now = datetime.now(timezone.utc)
         duration_seconds = game.time_to_hide
         await connection_manager.broadcast_to_game(
-            {
+            message={
                 "type": "start_timer_for_game",
                 "data": {
                     "duration_seconds": duration_seconds
@@ -296,7 +308,7 @@ class GameService(BaseService):
         await timer_manager.timer(
             game_id=game_id,
             end_time=now + timedelta(seconds=duration_seconds),
-            callback=self._on_game_timer_finished_callback(game_id)
+            callback= lambda: self._on_game_timer_finished_callback(game_id)
         )
         return game
 

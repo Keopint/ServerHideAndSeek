@@ -57,6 +57,7 @@ class ConnectionManager:
         """
         Отправить сообщение всем игрокам в игре, кроме указанного (опционально).
         """
+        print("[MESSAGE_DEBUG]: ", "Send message: ", message)
         game_key = str(game_id)
         if game_key not in self._game_connections:
             return

@@ -83,8 +83,7 @@ async def handle_client_message(
                         "player_id": str(player_id),
                         "role_id": str(new_role_id)
                     }
-                },
-                exclude_player=player_id
+                }
             )
         except Exception as e:
             print(f"[ERROR] change_role exception: {e}")
@@ -109,7 +108,7 @@ async def handle_client_message(
             await connection_manager.send_personal({
                 "type": "ready_status_changed",
                 "data": {
-                    "status": new_status
+                    "ready_status": new_status
                 }
             }, player_id)
             players = await player_service.get_players_in_game(game_id=game_id)
@@ -118,8 +117,20 @@ async def handle_client_message(
                 if not player.is_player_ready:
                     all_is_ready = False
                     break
+            await connection_manager.broadcast_to_game(
+                game_id,
+                {
+                    "type": "player_ready_status_changed",
+                    "data": {
+                        "player_id": str(player_id),
+                        "ready_status": new_status
+                    }
+                },
+                exclude_player=player_id
+            )
             if all_is_ready:
                 game_service = GameService(db)
+                print("[DEBUG GAME_ID]: ", str(game_id))
                 await game_service.start_game(game_id=game_id)
         except ValueError as e:
             await connection_manager.send_personal({
@@ -206,6 +217,8 @@ async def handle_client_message(
             game_service = GameService(db)
             game_with_relation = await game_service.get_game_with_relations(game_id)
             player_state = await player_service.get_player_in_game(game_id, player_id)
+            print("[DEBUG] ", to_dict(player_state))
+            print("[DEBUG] ", to_dict(game_with_relation))
             await connection_manager.send_personal({
                 "type": "websocket_connected_player",
                 "data": {
@@ -270,9 +283,11 @@ def register_websocket_endpoint(app):
                     game_id,
                     {
                         "type": "player_online",
-                        "player_id": str(player_id),
-                        "player_name": str(player.name),
-                        "role": str(player.role_ref.name) if player.role_ref else None  # исправлено
+                        "data": {
+                            "player_id": str(player_id),
+                            "player_name": str(player.name),
+                            "role_id": str(player.role_ref.id) if player.role_ref else None
+                        }
                     },
                     exclude_player=player_id
                 )
@@ -281,17 +296,22 @@ def register_websocket_endpoint(app):
                 initial_state = await player_service.get_player_in_game(game_id, player_id)
                 game_data = await game_service.get_game_with_relations(game_id)
 
+                print(f"[DEBUG 1] player_data: {initial_state}")
+                print(f"[DEBUG 1] game_data: {game_data}")
                 print(f"[DEBUG] Sending websocket_connected_player to {player_id}")
-                print(f"[DEBUG] player_data: {to_dict(initial_state)}")
-                print(f"[DEBUG] game_data: {to_dict(game_data)}")
+                print(f"[DEBUG 2] player_data: {to_dict(initial_state)}")
+                print(f"[DEBUG 2] game_data: {to_dict(game_data)}")
 
-                await connection_manager.send_personal({
-                    "type": "websocket_connected_player",
-                    "data": {
-                        "player_data": to_dict(initial_state),
-                        "game_data": to_dict(game_data)
-                    }
-                }, player_id)
+                await connection_manager.send_personal(
+                    message={
+                        "type": "websocket_connected_player",
+                        "data": {
+                            "player_data": to_dict(initial_state),
+                            "game_data": to_dict(game_data)
+                        }
+                    },
+                    player_id=player_id
+                )
 
                 # Цикл сообщений
                 while True:
@@ -330,7 +350,13 @@ def register_websocket_endpoint(app):
                     player.is_online = False
                     await connection_manager.broadcast_to_game(
                         game_id,
-                        {"type": "player_offline", "player_id": str(player_id)},
+                        {
+                            "type": "player_offline",
+                            "data": {
+                                "player_id": str(player_id),
+                                "player_name": str(player.name)
+                            }
+                        },
                         exclude_player=player_id
                     )
                 except Exception as e:

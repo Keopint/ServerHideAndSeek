@@ -71,16 +71,15 @@ class TimerManager:
             try:
                 await asyncio.sleep(delay)
                 logger.info(f"Timer {task_key} triggered")
-                await callback()
+                await callback()  # ← обязательно await
             except asyncio.CancelledError:
                 logger.info(f"Timer {task_key} cancelled")
                 raise
             except Exception as e:
                 logger.exception(f"Error in timer callback for {task_key}: {e}")
             finally:
-                # Удаляем задачу из словаря после выполнения
                 async with self._cleanup_lock:
-                    await self._tasks.pop(task_key, None)
+                    self._tasks.pop(task_key, None)
 
         task = asyncio.create_task(_waiter())
         self._tasks[task_key] = task
@@ -201,7 +200,7 @@ class TimerManager:
             finally:
                 # Удаляем задачу из словаря после выполнения
                 async with self._cleanup_lock:
-                    await self._tasks.pop(task_key, None)
+                    self._tasks.pop(task_key, None)
 
         task = asyncio.create_task(_waiter())
         self._tasks[task_key] = task
@@ -245,7 +244,7 @@ class TimerManager:
                 # Активируем выбранное событие
                 from services.event import EventService
                 event_service = EventService(db)
-                await event_service.activate_event(game_id, chosen_event.type)
+                await event_service.activate_event(game_id, chosen_event)
 
             # Если есть ещё шаги, планируем следующий через 30 секунд
             if remaining_steps > 1:
@@ -300,16 +299,18 @@ class TimerManager:
         ):
             # Расчёт нового радиуса
             new_radius = max(min_radius, current_radius - step_radius)
-            # Обновляем запись в БД
+
+            # Обновляем запись в БД и сразу фиксируем
             stmt = (
                 update(GameZone)
                 .where(GameZone.id == safe_zone.id)
                 .values(radius=new_radius, zone_data={"last_shrink": datetime.now(timezone.utc).isoformat()})
             )
             await db.execute(stmt)
-            await db.commit()
+            await db.commit()  # <--- КОММИТТИМ СРАЗУ
 
-            connection_manager.broadcast_to_game(
+            # ТОЛЬКО ПОСЛЕ ЭТОГО отправляем сообщения игрокам
+            await connection_manager.broadcast_to_game(
                 game_id=game_id,
                 message={
                     "type": "update_safe_zone",
@@ -338,9 +339,7 @@ class TimerManager:
         # Запускаем первый шаг
         await shrink_step(1, initial_radius, steps)
 
-
     async def cancel(self, task_key: str) -> bool:
-        """Отменяет запланированную задачу по ключу."""
         task = self._tasks.pop(task_key, None)
         if task and not task.done():
             task.cancel()
