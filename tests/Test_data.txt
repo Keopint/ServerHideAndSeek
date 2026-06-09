@@ -1037,6 +1037,24 @@ player_offline - информирование активных игроков о
 
 --------------------------------
 
+{
+    "type": "show_players_locations",
+    "data": {
+        "6faf27be-6f36-49c6-920b-5461f0f3e932": {
+            "location_lat": 50.3232332,
+            "location_lng": 48.324324
+        },
+        "23345833-e5e8-4bba-ab83-e40d5d7182b1": {
+            "location_lat": 61.324234,
+            "location_lng": 52.188232
+        }
+    }
+}
+
+{
+    "type": "remove_location_markers",
+    "data": {}
+}
 
 **************************************************
 

@@ -5,7 +5,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
-from datetime import datetime
+from datetime import datetime, timezone
+from sqlalchemy.dialects.postgresql import JSONB
 import uuid
 from sqlalchemy.orm import validates
 
@@ -151,7 +152,7 @@ class Ability(Base):
     recharge_time = Column(Integer, nullable=False, comment="время перезарядки в секундах")
     number_uses = Column(Integer, nullable=False, comment="количество использований")
     duration_seconds = Column(Integer, default=None)
-    data = Column(JSON, comment="additional parameters", default=None)
+    data = Column(JSONB, comment="additional parameters", default=None)
 
     roles = relationship(
         "Role",
@@ -175,7 +176,7 @@ class GameZone(Base):
     ends_at = Column(DateTime(timezone=True))
     created_by = Column(UUID, ForeignKey("players.id"), nullable=True)
     is_active = Column(Boolean, default=True)
-    zone_data = Column(JSON, nullable=False, default={})
+    zone_data = Column(JSONB, nullable=False, default={})
 
     # Добавляем обратную связь к игре (опционально)
     game = relationship("Game", back_populates="game_zones", foreign_keys=[game_id])
@@ -188,7 +189,7 @@ class PlayerEffect(Base):
     type = Column(Enum(EffectType))
     starts_at = Column(DateTime(timezone=True))
     ends_at = Column(DateTime(timezone=True))
-    data = Column(JSON, nullable=True)
+    data = Column(JSONB, nullable=True)
     is_active = Column(Boolean, default=True)
 
 class GameEvent(Base):
@@ -199,7 +200,7 @@ class GameEvent(Base):
     event_type = Column(Enum(EventType))
     starts_at = Column(DateTime(timezone=True))
     ends_at = Column(DateTime(timezone=True), nullable=True)
-    event_data = Column(JSON, nullable=False, default={})
+    event_data = Column(JSONB, nullable=False, default={})
 
 class PlayerAbility(Base):
     __tablename__ = "player_abilities"
@@ -219,7 +220,7 @@ class Game(Base):
     game_code = Column(String(6), nullable=False)
     name = Column(String, nullable=False)
     status = Column(Enum(GameStatus), nullable=False, default=GameStatus.WAITING)
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc).replace(second=0, microsecond=0))
     safe_zone_center_lat = Column(Float, nullable=False)
     safe_zone_center_lng = Column(Float, nullable=False)
     safe_zone_radius = Column(Float, nullable=False, default=500.0)
@@ -230,7 +231,7 @@ class Game(Base):
     zone_boundary_damage = Column(Integer, nullable=False, default=1)
     current_safe_zone_id = Column(UUID(as_uuid=True), ForeignKey("game_zones.id"),
                                   comment="optional, references active safe zone")
-    last_shrink_at = Column(DateTime, comment="last time when zone was active")
+    last_shrink_at = Column(DateTime(timezone=True), comment="last time when zone was active")
 
     players = relationship("Player", back_populates="game", cascade="all, delete-orphan")
     roles = relationship(
@@ -258,9 +259,9 @@ class Player(Base):
     is_alive = Column(Boolean, nullable=False, default=True)
     location_lat = Column(Float, nullable=False)
     location_lng = Column(Float, nullable=False)
-    last_location_update = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
-    trapped_until = Column(DateTime, nullable=True)
-    player_data = Column(JSON, comment="additional attributes like inventory")
+    last_location_update = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc).replace(second=0, microsecond=0))
+    trapped_until = Column(DateTime(timezone=True), nullable=True)
+    player_data = Column(JSONB, comment="additional attributes like inventory")
     is_player_ready = Column(Boolean, nullable=False, default=False)
     is_online = Column(Boolean, nullable=False, default=False)
 
@@ -281,12 +282,12 @@ class UsedAbility(Base):
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
     ability = Column(Enum(AbilityType), nullable=False)
     ability_id = Column(UUID(as_uuid=True), ForeignKey("abilities.id"), nullable=True)
-    used_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
+    used_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc).replace(second=0, microsecond=0))
     location_lat = Column(Float, nullable=False)
     location_lng = Column(Float, nullable=False)
 
     target_player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=True)
-    result = Column(JSON, comment="details of the ability outcome")
+    result = Column(JSONB, comment="details of the ability outcome")
 
     player = relationship("Player", back_populates="used_abilities", foreign_keys=[player_id])
     target_player = relationship("Player", back_populates="targeted_in_abilities", foreign_keys=[target_player_id])
@@ -299,7 +300,7 @@ class Event(Base):
     game_id = Column(UUID, ForeignKey("games.id"))
     type = Column(Enum(EventType), nullable=False)
     activation_frequency = Column(Enum(ActivationFrequencyType), nullable=False)
-    event_data = Column(JSON, nullable=False, default={})
+    event_data = Column(JSONB, nullable=False, default={})
 
     roles = relationship(
         "Role",
@@ -314,8 +315,8 @@ class GameStateSnapshot(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
-    snapshot_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow().replace(second=0, microsecond=0))
-    state = Column(JSON, nullable=False, comment="full game state dump")
+    snapshot_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc).replace(second=0, microsecond=0))
+    state = Column(JSONB, nullable=False, comment="full game state dump")
 
     game = relationship("Game", back_populates="snapshots")
 

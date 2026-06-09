@@ -1,9 +1,14 @@
 import math
 from typing import Tuple
+from database.models import Player
 
 def validate_coordinates(lat: float, lng: float) -> bool:
     """Проверяет, что координаты находятся в допустимых пределах."""
     return -90 <= lat <= 90 and -180 <= lng <= 180
+
+def calculate_distance_between_two_players(player1: Player, player2: Player):
+    distance = calculate_distance(player1.location_lat, player1.location_lng, player2.location_lat, player2.location_lng)
+    return distance
 
 def calculate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """

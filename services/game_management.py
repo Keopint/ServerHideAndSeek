@@ -44,7 +44,6 @@ class GameService(BaseService):
             game_roles_dict = data.get("game_roles", {})
             roles_names = list(game_roles_dict.keys())
             roles_abilities = data.get("roles_abilities", {})
-            roles_events = data.get("roles_events", {})
             events_configurations = data.get("events_configurations", {})
 
             if not game_roles_dict.keys():
@@ -211,75 +210,68 @@ class GameService(BaseService):
             raise ValueError(f"Ошибка при создании игры: {str(e)}")
 
     async def get_game_with_relations(self, game_id: uuid.UUID):
-        stmt = select(Game).where(Game.id == game_id).options(
-            selectinload(Game.roles).selectinload(Role.abilities),
-            selectinload(Game.events),
-            selectinload(Game.players)
-        ).execution_options(populate_existing=True)
-        result = await self.db.execute(stmt)
-        game_with_relations = result.scalar_one()
-        return game_with_relations
+        try:
+            await self.db.commit()
+            await self.db.flush()
+            stmt = select(Game).where(Game.id == game_id).options(
+                selectinload(Game.roles).selectinload(Role.abilities),
+                selectinload(Game.events),
+                selectinload(Game.players).selectinload(Player.role_ref)
+            ).execution_options(populate_existing=True)
+            result = await self.db.execute(stmt)
+            game_with_relations = result.scalar_one()
+            print(f"DEBUG: roles raw = {game_with_relations.roles}")
+            print(f"DEBUG: roles length = {len(game_with_relations.roles)}")
+            for r in game_with_relations.roles:
+                print(f"  {r}")
+            return game_with_relations
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def start_game(self, game_id: uuid.UUID) -> Type[Game]:
-        player_service = PlayerService(self.db)
-        players = await player_service.get_players_in_game(game_id=game_id)
-        all_is_ready = True
-        for player in players:
-            if not player.is_player_ready:
-                all_is_ready = False
-                break
-        if not all_is_ready:
-            raise ValueError("Not all players active")
+        try:
+            player_service = PlayerService(self.db)
+            players = await player_service.get_players_in_game(game_id=game_id)
+            all_is_ready = True
+            for player in players:
+                if not player.is_player_ready:
+                    all_is_ready = False
+                    break
+            if not all_is_ready:
+                raise ValueError("Not all players active")
 
-        game = await self.get_game_with_relations(game_id)
-        game.status = GameStatus.HIDE_TIME
+            game = await self.get_game_with_relations(game_id)
+            game.status = GameStatus.HIDE_TIME
 
-        await self.db.commit()
-        await self.db.refresh(game)
+            await self.db.commit()
+            await self.db.refresh(game)
 
-        from database.db import get_db
-        async for db in get_db():
-            zone_service = ZoneService(db)
-            await zone_service.activate_safe_zone(game.id)
-            break
+            now = datetime.now(timezone.utc)
+            duration_seconds = game.time_to_hide
 
-        now = datetime.now(timezone.utc)
-        duration_seconds = game.time_to_hide
-
-        await connection_manager.broadcast_to_game(
-            game_id=game_id,
-            message={
-                "type": "start_timer_to_hide",
-                "data": {
-                    "duration_seconds": duration_seconds
+            await connection_manager.broadcast_to_game(
+                game_id=game_id,
+                message={
+                    "type": "start_timer_to_hide",
+                    "data": {
+                        "duration_seconds": duration_seconds
+                    }
                 }
-            }
-        )
+            )
 
-        await timer_manager.timer(
-            game_id=game_id,
-            end_time=now + timedelta(seconds=duration_seconds),
-            callback= lambda: self._on_hide_to_time_finished_callback(game_id)
-        )
-        stmt = (
-            select(Event)
-            .join(role_events, Event.id == role_events.c.event_id)
-            .join(Role, Role.id == role_events.c.role_id)
-            .join(game_roles, Role.id == game_roles.c.role_id)
-            .where(game_roles.c.game_id == game_id)
-            .distinct()
-        )
-        result = await self.db.execute(stmt)
-        events = result.scalars().all()
-        await timer_manager.start_events(
-            game_id=game_id,
-            events=events,
-            end_time=now + timedelta(seconds=duration_seconds),
-            db=self.db
-        )
-        return game
+            await timer_manager.timer(
+                game_id=game_id,
+                end_time=now + timedelta(seconds=duration_seconds),
+                callback= lambda: self._on_hide_to_time_finished_callback(game_id)
+            )
+            return game
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def _on_hide_to_time_finished_callback(self, game_id: uuid.UUID):
+        print("[HIDE_TIMER CALLBACK]")
         await connection_manager.broadcast_to_game(
             game_id=game_id,
             message={
@@ -290,37 +282,56 @@ class GameService(BaseService):
         await self.start_active_game(game_id)
 
     async def start_active_game(self, game_id: uuid.UUID):
-        game = await self.db.get(Game, game_id)
-        game.status = GameStatus.ACTIVE
-        await self.db.commit()
-        await self.db.refresh(game)
-        now = datetime.now(timezone.utc)
-        duration_seconds = game.time_to_hide
-        await connection_manager.broadcast_to_game(
-            message={
-                "type": "start_timer_for_game",
-                "data": {
-                    "duration_seconds": duration_seconds
-                }
-            },
-            game_id=game_id
-        )
-        await timer_manager.timer(
-            game_id=game_id,
-            end_time=now + timedelta(seconds=duration_seconds),
-            callback= lambda: self._on_game_timer_finished_callback(game_id)
-        )
-        return game
+        try:
+            game = await self.db.get(Game, game_id)
+            game.status = GameStatus.ACTIVE
+            await self.db.commit()
+            await self.db.refresh(game)
+            now = datetime.now(timezone.utc)
+            duration_seconds = game.game_duration
+            await connection_manager.broadcast_to_game(
+                message={
+                    "type": "start_timer_for_game",
+                    "data": {
+                        "duration_seconds": duration_seconds
+                    }
+                },
+                game_id=game_id
+            )
+            from database.db import get_db
+            async for db in get_db():
+                zone_service = ZoneService(db)
+                await zone_service.activate_safe_zone(game.id)
+                break
+            await timer_manager.timer(
+                game_id=game_id,
+                end_time=now + timedelta(seconds=duration_seconds),
+                callback= lambda: self._on_game_timer_finished_callback(game_id)
+            )
+            stmt = (
+                select(Event)
+                .join(role_events, Event.id == role_events.c.event_id)
+                .join(Role, Role.id == role_events.c.role_id)
+                .join(game_roles, Role.id == game_roles.c.role_id)
+                .where(game_roles.c.game_id == game_id)
+                .distinct()
+            ).execution_options(populate_existing=True)
+            result = await self.db.execute(stmt)
+            events = result.scalars().all()
+            await timer_manager.start_events(
+                game_id=game_id,
+                events=events,
+                end_time=now + timedelta(seconds=duration_seconds),
+                db=self.db
+            )
+            return game
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def _on_game_timer_finished_callback(self, game_id: uuid.UUID):
-        player_service = PlayerService(self.db)
-        players = await player_service.get_players_in_game(game_id)
+        await self.finish_game(game_id)
 
-        cnt_hiders = 0
-        for player in players:
-            role = await self.db.get(Role, player.role_id)
-            if player.is_alive and role.victory_condition == VictoryConditionType.HIDER:
-                cnt_hiders += 1
 
     async def send_finish(self, player: Player, is_victory: bool):
         connection_manager.send_personal(
@@ -334,55 +345,59 @@ class GameService(BaseService):
         )
 
     async def finish_game(self, game_id: uuid.UUID):
-        game = await self.db.get(Game, game_id)
-        game.status = GameStatus.FINISHED
+        try:
+            game = await self.db.get(Game, game_id)
+            game.status = GameStatus.FINISHED
 
-        connection_manager.broadcast_to_game(
-            game_id=game_id,
-            message={
-                "type": "game_finished",
-                "data": {}
-            }
-        )
+            connection_manager.broadcast_to_game(
+                game_id=game_id,
+                message={
+                    "type": "game_finished",
+                    "data": {}
+                }
+            )
 
-        player_service = PlayerService(self.db)
-        players = await player_service.get_players_in_game(game_id)
+            player_service = PlayerService(self.db)
+            players = await player_service.get_players_in_game(game_id)
 
-        cnt_hiders = 0
-        for player in players:
-            role = await self.db.get(Role, player.role_id)
-            if player.is_alive and role.victory_condition == VictoryConditionType.HIDER:
-                cnt_hiders += 1
+            cnt_hiders = 0
+            for player in players:
+                role = await self.db.get(Role, player.role_id)
+                if player.is_alive and role.victory_condition == VictoryConditionType.HIDER:
+                    cnt_hiders += 1
 
-        stmt = (select(Player).join(Role, Player.role_id == Role.id)
-        .where(
-            Player.game_id == game_id,
-            Role.victory_condition == VictoryConditionType.HIDER
-        ))
-        result = await self.db.execute(stmt)
-        hiders = result.scalars().all()
+            stmt = (select(Player).join(Role, Player.role_id == Role.id)
+            .where(
+                Player.game_id == game_id,
+                Role.victory_condition == VictoryConditionType.HIDER
+            ))
+            result = await self.db.execute(stmt)
+            hiders = result.scalars().all()
 
-        stmt = (select(Player).join(Role, Player.role_id == Role.id)
-        .where(
-            Player.game_id == game_id,
-            Role.victory_condition == VictoryConditionType.SEEKER
-        ))
-        result = await self.db.execute(stmt)
-        seekers = result.scalars().all()
+            stmt = (select(Player).join(Role, Player.role_id == Role.id)
+            .where(
+                Player.game_id == game_id,
+                Role.victory_condition == VictoryConditionType.SEEKER
+            ))
+            result = await self.db.execute(stmt)
+            seekers = result.scalars().all()
 
-        if cnt_hiders > 0:
-            for player in hiders:
-               await self.send_finish(player, True)
-            for player in seekers:
-                await self.send_finish(player, False)
-        else:
-            for player in hiders:
-                await self.send_finish(player, False)
-            for player in seekers:
-                await self.send_finish(player, True)
+            if cnt_hiders > 0:
+                for player in hiders:
+                   await self.send_finish(player, True)
+                for player in seekers:
+                    await self.send_finish(player, False)
+            else:
+                for player in hiders:
+                    await self.send_finish(player, False)
+                for player in seekers:
+                    await self.send_finish(player, True)
 
-        await self.db.commit()
-        await self.db.refresh(game)
+            await self.db.commit()
+            await self.db.refresh(game)
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def get_status(self, game_id: uuid.UUID) -> Type[GameStatus]:
         game = await self.db.get(Game, game_id)
@@ -399,34 +414,38 @@ class GameService(BaseService):
         return game
 
     async def add_player(self, game_code: str, data: Dict[str, Any]):
-        stmt = select(Game).where(Game.game_code == game_code).options(selectinload(Game.roles))
-        result = await self.db.execute(stmt)
-        game = result.scalar_one_or_none()
+        try:
+            stmt = select(Game).where(Game.game_code == game_code).options(selectinload(Game.roles))
+            result = await self.db.execute(stmt)
+            game = result.scalar_one_or_none()
 
-        if not game:
-            raise ValueError("Game not found")
+            if not game:
+                raise ValueError("Game not found")
 
-        if game.status != GameStatus.WAITING:
-            raise ValueError("Game is already active")
+            if game.status != GameStatus.WAITING:
+                raise ValueError("Game is already active")
 
-        if not game.roles:
-            raise ValueError("Game has no roles")
+            if not game.roles:
+                raise ValueError("Game has no roles")
 
-        first_role = game.roles[0]  # теперь безопасно
+            first_role = game.roles[0]  # теперь безопасно
 
-        new_player = Player(
-            game_id=game.id,
-            name=data["name"],
-            role_id=first_role.id,
-            health=first_role.health,
-            is_alive=True,
-            location_lat=data["player_location_lat"],
-            location_lng=data["player_location_lng"],
-            is_online = False,
-            last_location_update=datetime.now(timezone.utc)
-        )
-        self.db.add(new_player)
-        await self.db.commit()
-        await self.db.refresh(new_player)
-        return new_player
+            new_player = Player(
+                game_id=game.id,
+                name=data["name"],
+                role_id=first_role.id,
+                health=first_role.health,
+                is_alive=True,
+                location_lat=data["player_location_lat"],
+                location_lng=data["player_location_lng"],
+                is_online = False,
+                last_location_update=datetime.now(timezone.utc)
+            )
+            self.db.add(new_player)
+            await self.db.commit()
+            await self.db.refresh(new_player)
+            return new_player
+        except Exception:
+            await self.db.rollback()
+            raise
 

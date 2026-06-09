@@ -9,7 +9,7 @@ from database.db import get_db
 from services.game_management import GameService
 from services.websocket_manager import connection_manager
 from services.player import PlayerService
-from utils.conversions import to_dict
+from utils.conversions import to_dict, game_to_dict
 
 # Типы сообщений, которые клиент может отправлять
 CLIENT_MESSAGE_TYPES = {
@@ -30,6 +30,7 @@ async def handle_client_message(
     db: AsyncSession
 ):
     """Обработчик входящих сообщений от клиента."""
+    await db.flush()
 
     if isinstance(message, str):
         print(f"Received string instead of dict: {message}")
@@ -111,12 +112,6 @@ async def handle_client_message(
                     "ready_status": new_status
                 }
             }, player_id)
-            players = await player_service.get_players_in_game(game_id=game_id)
-            all_is_ready = True
-            for player in players:
-                if not player.is_player_ready:
-                    all_is_ready = False
-                    break
             await connection_manager.broadcast_to_game(
                 game_id,
                 {
@@ -128,6 +123,13 @@ async def handle_client_message(
                 },
                 exclude_player=player_id
             )
+            players = await player_service.get_players_in_game(game_id=game_id)
+            all_is_ready = True
+            for player in players:
+                await db.refresh(player)
+                if not player.is_player_ready:
+                    all_is_ready = False
+                    break
             if all_is_ready:
                 game_service = GameService(db)
                 print("[DEBUG GAME_ID]: ", str(game_id))
@@ -173,16 +175,8 @@ async def handle_client_message(
             }, player_id)
 
     elif msg_type == "use_ability":
-        game_service = GameService(db)
-        game_status = await game_service.get_status(game_id)
-
-        # Проверяем, активна ли игра
-        if game_status != GameStatus.ACTIVE:
-            await connection_manager.send_personal({
-                "type": "error",
-                "message": "Game is not active!"
-            }, player_id)
-            return
+        await db.flush()
+        await db.commit()
 
         ability_type = data.get("ability_type")
         if not ability_type:
@@ -218,12 +212,12 @@ async def handle_client_message(
             game_with_relation = await game_service.get_game_with_relations(game_id)
             player_state = await player_service.get_player_in_game(game_id, player_id)
             print("[DEBUG] ", to_dict(player_state))
-            print("[DEBUG] ", to_dict(game_with_relation))
+            print("[DEBUG] ", game_to_dict(game_with_relation))
             await connection_manager.send_personal({
-                "type": "websocket_connected_player",
+                "type": "game_state",
                 "data": {
                     "player_data": to_dict(player_state),
-                    "game_data": to_dict(game_with_relation)
+                    "game_data": game_to_dict(game_with_relation)
                 }
             }, player_id)
         except Exception as e:
@@ -264,7 +258,7 @@ def register_websocket_endpoint(app):
 
             try:
                 game_service = GameService(db)
-                game = await game_service.get_game(game_id)
+                game = await game_service.get_game_with_relations(game_id)
                 if game is None:
                     await websocket.close(code=4004, reason="Game not found")
                     return
@@ -286,7 +280,8 @@ def register_websocket_endpoint(app):
                         "data": {
                             "player_id": str(player_id),
                             "player_name": str(player.name),
-                            "role_id": str(player.role_ref.id) if player.role_ref else None
+                            "role_id": str(player.role_ref.id) if player.role_ref else None,
+                            "role_ref": to_dict(player.role_ref)
                         }
                     },
                     exclude_player=player_id
@@ -300,14 +295,14 @@ def register_websocket_endpoint(app):
                 print(f"[DEBUG 1] game_data: {game_data}")
                 print(f"[DEBUG] Sending websocket_connected_player to {player_id}")
                 print(f"[DEBUG 2] player_data: {to_dict(initial_state)}")
-                print(f"[DEBUG 2] game_data: {to_dict(game_data)}")
+                print(f"[DEBUG 2] game_data: {game_to_dict(game_data)}")
 
                 await connection_manager.send_personal(
                     message={
                         "type": "websocket_connected_player",
                         "data": {
                             "player_data": to_dict(initial_state),
-                            "game_data": to_dict(game_data)
+                            "game_data": game_to_dict(game_data)
                         }
                     },
                     player_id=player_id

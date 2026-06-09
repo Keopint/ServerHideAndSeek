@@ -16,68 +16,27 @@ class EventService(BaseService):
 
     async def activate_event(self, game_id: uuid.UUID, event: Event):
         """Активирует событие (создаёт зоны, рассылает уведомления)"""
+        try:
+            game = await self.db.get(Game, game_id)
+            event_data = event.event_data
+            now = datetime.now(timezone.utc)
 
-        game = await self.db.get(Game, game_id)
-        event_data = event.event_data
-        now = datetime.now(timezone.utc)
+            duration_seconds = event_data.get("duration_seconds", None)
+            ends_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
 
-        duration_seconds = event_data.get("duration_seconds", None)
-        ends_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
-
-        # Создаём запись в GameEvent (если нужна)
-        new_game_event = GameEvent(
-            game_id=game_id,
-            event_type=event.type,
-            starts_at=now,
-            ends_at=ends_at,
-            event_data=event_data
-        )
-        self.db.add(new_game_event)
-        await self.db.flush()
-
-        if new_game_event.event_type == EventType.BOMB:
-
-            lat, lng = await self.generate_point_in_circle(
-                game.safe_zone_center_lat,
-                game.safe_zone_center_lng,
-                game.safe_zone_radius
-            )
-
-            zone_service = ZoneService(self.db)
-
-            await zone_service.create_zone(
+            # Создаём запись в GameEvent (если нужна)
+            new_game_event = GameEvent(
                 game_id=game_id,
-                zone_type=ZoneType.DANGER,
-                center_lat=lat,
-                center_lng=lng,
-                duration_seconds=duration_seconds,
-                radius=event_data.get("radius"),
-                damage=event_data.get("damage")
+                event_type=event.type,
+                starts_at=now,
+                ends_at=ends_at,
+                event_data=event_data
             )
-        elif new_game_event.event_type == EventType.AIRDROP:
+            self.db.add(new_game_event)
+            await self.db.flush()
 
-            lat, lng = await self.generate_point_in_circle(
-                game.safe_zone_center_lat,
-                game.safe_zone_center_lng,
-                game.safe_zone_radius
-            )
+            if new_game_event.event_type == EventType.BOMB:
 
-            zone_service = ZoneService(self.db)
-
-            await zone_service.create_zone(
-                game_id=game_id,
-                zone_type=ZoneType.AIRDROP,
-                center_lat=lat,
-                center_lng=lng,
-                duration_seconds=duration_seconds,
-                radius=event_data.get("radius"),
-                damage=0
-            )
-        elif new_game_event.event_type == EventType.BOMBARDMENT:
-
-            cnt = random.randint(3, 7)
-
-            for i in range(cnt):
                 lat, lng = await self.generate_point_in_circle(
                     game.safe_zone_center_lat,
                     game.safe_zone_center_lng,
@@ -88,20 +47,64 @@ class EventService(BaseService):
 
                 await zone_service.create_zone(
                     game_id=game_id,
-                    zone_type=ZoneType.WARNING,
+                    zone_type=ZoneType.DANGER,
                     center_lat=lat,
                     center_lng=lng,
                     duration_seconds=duration_seconds,
-                    radius=event_data.get("radius", 10),
-                    damage=event_data.get("damage", 50)
+                    radius=event_data.get("radius"),
+                    damage=event_data.get("damage")
                 )
-        elif new_game_event.event_type == EventType.REVEAL:
-            await timer_manager.reveal_event_schedule(
-                game_id=game_id,
-                event=event,
-                end_time=ends_at,
-                db=self.db
-            )
+            elif new_game_event.event_type == EventType.AIRDROP:
+
+                lat, lng = await self.generate_point_in_circle(
+                    game.safe_zone_center_lat,
+                    game.safe_zone_center_lng,
+                    game.safe_zone_radius
+                )
+
+                zone_service = ZoneService(self.db)
+
+                await zone_service.create_zone(
+                    game_id=game_id,
+                    zone_type=ZoneType.AIRDROP,
+                    center_lat=lat,
+                    center_lng=lng,
+                    duration_seconds=duration_seconds,
+                    radius=event_data.get("radius"),
+                    damage=0
+                )
+            elif new_game_event.event_type == EventType.BOMBARDMENT:
+
+                cnt = random.randint(3, 7)
+
+                for i in range(cnt):
+                    lat, lng = await self.generate_point_in_circle(
+                        game.safe_zone_center_lat,
+                        game.safe_zone_center_lng,
+                        game.safe_zone_radius
+                    )
+
+                    zone_service = ZoneService(self.db)
+
+                    await zone_service.create_zone(
+                        game_id=game_id,
+                        zone_type=ZoneType.WARNING,
+                        center_lat=lat,
+                        center_lng=lng,
+                        duration_seconds=duration_seconds,
+                        radius=event_data.get("radius", 10),
+                        damage=event_data.get("damage", 50)
+                    )
+            elif new_game_event.event_type == EventType.REVEAL:
+                await timer_manager.reveal_event_schedule(
+                    game_id=game_id,
+                    event=event,
+                    end_time=ends_at,
+                    db=self.db
+                )
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def generate_point_in_circle(self, lat_center, lon_center, radius_meters):
         """

@@ -77,14 +77,6 @@ async def connect_player(
         new_player = await service.add_player(game_code, data)
         game = await service.get_game_with_relations(new_player.game_id)
 
-        await connection_manager.broadcast_to_game(
-            message={
-                "type": "player_connected",
-                "data": to_dict(new_player)
-            },
-            game_id=game.id
-        )
-
         return {
             "game_id": str(game.id),
             "player_id": str(new_player.id),

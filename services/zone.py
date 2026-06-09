@@ -52,12 +52,14 @@ class ZoneService(BaseService):
         zone_type: ZoneType,
         center_lat: float,
         center_lng: float,
-        duration_seconds: int,
+        duration_seconds: int | None,
         radius: float,
         damage: int | None = None,
         creator_id: uuid.UUID | None = None,
     ) -> GameZone:
         """Создаёт новую зону и планирует её завершение."""
+
+        print("[DEBUG CREATE ZONE]: ")
         now = datetime.now(timezone.utc)
 
         zone = GameZone(
@@ -67,7 +69,7 @@ class ZoneService(BaseService):
             center_lng=center_lng,
             radius=radius,
             starts_at=now,
-            ends_at=now + timedelta(seconds=duration_seconds),
+            ends_at=now + timedelta(seconds=duration_seconds) if duration_seconds is not None else None,
             damage=damage,
             created_by=creator_id,
             is_active=True
@@ -80,7 +82,7 @@ class ZoneService(BaseService):
             message={
                 "type": "create_zone",
                 "data": {
-                    "zone_id": zone.id,
+                    "zone_id": str(zone.id),
                     "zone_type": str(zone_type),
                     "center_lat": center_lat,
                     "center_lng": center_lng,
@@ -88,15 +90,15 @@ class ZoneService(BaseService):
                 }
             }
         )
-
-        # Планируем завершение
-        await timer_manager.schedule(
-            game_id=game_id,
-            entity_type=TimerType.ZONE,
-            entity_id=zone.id,
-            end_time=zone.ends_at,
-            callback=lambda: self._on_zone_expired_callback(game_id, zone.id)
-        )
+        if zone.ends_at is not None:
+            # Планируем завершение
+            await timer_manager.schedule(
+                game_id=game_id,
+                entity_type=TimerType.ZONE,
+                entity_id=zone.id,
+                end_time=zone.ends_at,
+                callback=lambda: self._on_zone_expired_callback(game_id, zone.id)
+            )
 
         return zone
 
