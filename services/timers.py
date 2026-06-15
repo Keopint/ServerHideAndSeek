@@ -470,7 +470,7 @@ class TimerManager():
                 .values(radius=new_radius, zone_data={"last_shrink": datetime.now(timezone.utc).isoformat()})
             )
             await db.execute(stmt)
-            await db.commit()  # <--- КОММИТТИМ СРАЗУ
+            await db.commit()
 
             # ТОЛЬКО ПОСЛЕ ЭТОГО отправляем сообщения игрокам
             await connection_manager.broadcast_to_game(
@@ -500,7 +500,17 @@ class TimerManager():
                 )
 
         # Запускаем первый шаг
-        await shrink_step(1, initial_radius, steps)
+        await self.schedule(
+            game_id=game_id,
+            entity_type=TimerType.ZONE_SHRINK,
+            entity_id=safe_zone.id,
+            end_time=datetime.now(timezone.utc) + timedelta(seconds=game.zone_shrink_interval),
+            callback=lambda: shrink_step(
+                1,
+                initial_radius,
+                steps
+            )
+        )
 
     async def cancel(self, task_key: str) -> bool:
         task = self._tasks.pop(task_key, None)

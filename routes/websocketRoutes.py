@@ -4,7 +4,7 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from database.models import GameStatus, PlayerDeathCauses
+from database.models import GameStatus, PlayerDeathCauses, Game
 from database.db import get_db
 from services.game_management import GameService
 from services.websocket_manager import connection_manager
@@ -30,7 +30,6 @@ async def handle_client_message(
     db: AsyncSession
 ):
     """Обработчик входящих сообщений от клиента."""
-    await db.flush()
 
     if isinstance(message, str):
         print(f"Received string instead of dict: {message}")
@@ -175,8 +174,15 @@ async def handle_client_message(
             }, player_id)
 
     elif msg_type == "use_ability":
-        await db.flush()
-        await db.commit()
+
+        game = await db.get(Game, game_id)
+
+        if game.status != GameStatus.ACTIVE:
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": "Game is not Active!"
+            }, player_id)
+            return
 
         ability_type = data.get("ability_type")
         if not ability_type:
@@ -291,11 +297,9 @@ def register_websocket_endpoint(app):
                 initial_state = await player_service.get_player_in_game(game_id, player_id)
                 game_data = await game_service.get_game_with_relations(game_id)
 
-                print(f"[DEBUG 1] player_data: {initial_state}")
-                print(f"[DEBUG 1] game_data: {game_data}")
                 print(f"[DEBUG] Sending websocket_connected_player to {player_id}")
-                print(f"[DEBUG 2] player_data: {to_dict(initial_state)}")
-                print(f"[DEBUG 2] game_data: {game_to_dict(game_data)}")
+                print(f"[DEBUG] player_data: {to_dict(initial_state)}")
+                print(f"[DEBUG] game_data: {game_to_dict(game_data)}")
 
                 await connection_manager.send_personal(
                     message={

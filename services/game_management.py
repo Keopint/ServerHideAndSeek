@@ -77,6 +77,7 @@ class GameService(BaseService):
             await self.db.flush()  # чтобы получить game.id
 
             # 5. Создаём начальную безопасную зону
+
             now = datetime.now(timezone.utc)
             safe_zone = GameZone(
                 game_id=game.id,
@@ -175,6 +176,7 @@ class GameService(BaseService):
                     ability = Ability(
                         ability_type=ability_enum,
                         number_uses=ability_params["number_uses"],
+                        duration_seconds=ability_params["duration_seconds"],
                         recharge_time=ability_params["recharge_time"],
                         data=ability_params["addition_data"]
                     )
@@ -216,7 +218,9 @@ class GameService(BaseService):
             stmt = select(Game).where(Game.id == game_id).options(
                 selectinload(Game.roles).selectinload(Role.abilities),
                 selectinload(Game.events),
-                selectinload(Game.players).selectinload(Player.role_ref)
+                selectinload(Game.players).selectinload(Player.role_ref).options(
+                    selectinload(Role.abilities)
+                )
             ).execution_options(populate_existing=True)
             result = await self.db.execute(stmt)
             game_with_relations = result.scalar_one()
@@ -225,9 +229,9 @@ class GameService(BaseService):
             for r in game_with_relations.roles:
                 print(f"  {r}")
             return game_with_relations
-        except Exception:
+        except Exception as e:
             await self.db.rollback()
-            raise
+            raise ValueError(f"Ошибка при получении данных об игре: {str(e)}")
 
     async def start_game(self, game_id: uuid.UUID) -> Type[Game]:
         try:
@@ -266,9 +270,9 @@ class GameService(BaseService):
                 callback= lambda: self._on_hide_to_time_finished_callback(game_id)
             )
             return game
-        except Exception:
+        except Exception as e:
             await self.db.rollback()
-            raise
+            raise ValueError(f"Ошибка при запуске игры или во время пряток: {str(e)}")
 
     async def _on_hide_to_time_finished_callback(self, game_id: uuid.UUID):
         print("[HIDE_TIMER CALLBACK]")
@@ -325,16 +329,17 @@ class GameService(BaseService):
                 db=self.db
             )
             return game
-        except Exception:
+        except Exception as e:
             await self.db.rollback()
-            raise
+            raise ValueError(f"Ошибка при запуске активной фазы игры или во время игры: {str(e)}")
 
     async def _on_game_timer_finished_callback(self, game_id: uuid.UUID):
         await self.finish_game(game_id)
+        return
 
 
     async def send_finish(self, player: Player, is_victory: bool):
-        connection_manager.send_personal(
+        await connection_manager.send_personal(
             player_id=player.id,
             message={
                 "type": "game_finished",
@@ -349,7 +354,7 @@ class GameService(BaseService):
             game = await self.db.get(Game, game_id)
             game.status = GameStatus.FINISHED
 
-            connection_manager.broadcast_to_game(
+            await connection_manager.broadcast_to_game(
                 game_id=game_id,
                 message={
                     "type": "game_finished",
@@ -395,9 +400,9 @@ class GameService(BaseService):
 
             await self.db.commit()
             await self.db.refresh(game)
-        except Exception:
+        except Exception as e:
             await self.db.rollback()
-            raise
+            raise ValueError(f"Ошибка при окончании игры: {str(e)}")
 
     async def get_status(self, game_id: uuid.UUID) -> Type[GameStatus]:
         game = await self.db.get(Game, game_id)
@@ -445,7 +450,7 @@ class GameService(BaseService):
             await self.db.commit()
             await self.db.refresh(new_player)
             return new_player
-        except Exception:
+        except Exception as e:
             await self.db.rollback()
-            raise
+            raise ValueError(f"Ошибка при добавлении нового игрока: {str(e)}")
 

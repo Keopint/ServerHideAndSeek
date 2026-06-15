@@ -37,10 +37,12 @@ class EventService(BaseService):
 
             if new_game_event.event_type == EventType.BOMB:
 
+                safe_zone = await self.db.get(GameZone, game.current_safe_zone_id)
+
                 lat, lng = await self.generate_point_in_circle(
-                    game.safe_zone_center_lat,
-                    game.safe_zone_center_lng,
-                    game.safe_zone_radius
+                    safe_zone.center_lat,
+                    safe_zone.center_lng,
+                    safe_zone.radius
                 )
 
                 zone_service = ZoneService(self.db)
@@ -56,10 +58,12 @@ class EventService(BaseService):
                 )
             elif new_game_event.event_type == EventType.AIRDROP:
 
+                safe_zone = await self.db.get(GameZone, game.current_safe_zone_id)
+
                 lat, lng = await self.generate_point_in_circle(
-                    game.safe_zone_center_lat,
-                    game.safe_zone_center_lng,
-                    game.safe_zone_radius
+                    safe_zone.center_lat,
+                    safe_zone.center_lng,
+                    safe_zone.radius
                 )
 
                 zone_service = ZoneService(self.db)
@@ -77,11 +81,13 @@ class EventService(BaseService):
 
                 cnt = random.randint(3, 7)
 
+                safe_zone = await self.db.get(GameZone, game.current_safe_zone_id)
+
                 for i in range(cnt):
                     lat, lng = await self.generate_point_in_circle(
-                        game.safe_zone_center_lat,
-                        game.safe_zone_center_lng,
-                        game.safe_zone_radius
+                        safe_zone.center_lat,
+                        safe_zone.center_lng,
+                        safe_zone.radius
                     )
 
                     zone_service = ZoneService(self.db)

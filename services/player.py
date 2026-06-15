@@ -409,7 +409,7 @@ class PlayerService(BaseService):
 
             ability = await self.db.get(Ability, player_ability.ability_id)
 
-            print(ability_type)
+            print(to_dict(ability))
 
             if AbilityType(ability_type) == AbilityType.SHIELD:
                 await self.apply_effect(

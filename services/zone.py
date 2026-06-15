@@ -1,6 +1,6 @@
 import random
 import uuid
-from typing import Dict, Set
+from typing import Dict, Set, Type
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,17 @@ from services.timers import timer_manager, TimerType
 from utils.conversions import to_dict
 from utils.geo import is_point_in_circle
 from services.websocket_manager import connection_manager
+
+
+async def _on_zone_expired_callback(game_id: uuid.UUID, zone_id: uuid.UUID):
+    """Callback для таймера; создаёт новую сессию и вызывает обработчик."""
+    # Импортируем здесь, чтобы избежать циклических зависимостей
+    print("[DEBUG] END ZONE TIMER")
+    from database.db import get_db
+    async for db in get_db():
+        service = ZoneService(db)
+        await service.handle_zone_expired(game_id, zone_id)
+        break
 
 
 class ZoneService(BaseService):
@@ -83,33 +94,26 @@ class ZoneService(BaseService):
                 "type": "create_zone",
                 "data": {
                     "zone_id": str(zone.id),
-                    "zone_type": str(zone_type),
+                    "zone_type": str(zone_type.value),
                     "center_lat": center_lat,
                     "center_lng": center_lng,
                     "radius": radius
                 }
             }
         )
+        print(f"[DEBUG] zone.ends_at: {zone.ends_at}")
         if zone.ends_at is not None:
             # Планируем завершение
+            print("[DEBUG] START ZONE TIMER")
             await timer_manager.schedule(
                 game_id=game_id,
                 entity_type=TimerType.ZONE,
                 entity_id=zone.id,
                 end_time=zone.ends_at,
-                callback=lambda: self._on_zone_expired_callback(game_id, zone.id)
+                callback=lambda: self.handle_zone_expired(game_id, zone.id)
             )
 
         return zone
-
-    async def _on_zone_expired_callback(self, game_id: uuid.UUID, zone_id: uuid.UUID):
-        """Callback для таймера; создаёт новую сессию и вызывает обработчик."""
-        # Импортируем здесь, чтобы избежать циклических зависимостей
-        from database.db import get_db
-        async for db in get_db():
-            service = ZoneService(db)
-            await service.handle_zone_expired(game_id, zone_id)
-            break
 
     async def handle_zone_expired(self, game_id: uuid.UUID, zone_id: uuid.UUID):
         """Обрабатывает истечение зоны: деактивирует, применяет эффекты к игрокам внутри."""
@@ -134,32 +138,33 @@ class ZoneService(BaseService):
         async for db in get_db():
             player_service = PlayerService(db)
 
-            connection_manager.broadcast_to_game(
+            await connection_manager.broadcast_to_game(
                 game_id=game_id,
                 message={
                     "type": "delete_zone",
                     "data": {
-                        "zone_id": zone.id,
+                        "zone_id": str(zone.id)
                     }
                 }
             )
-
             for player in players:
-                if player.lat is None or player.lng is None:
+                print(f"[DEBUG] player {player.name} has coordinate: {player.location_lat}, {player.location_lng}")
+                if player.location_lat is None or player.location_lng is None:
                     continue
-                if is_point_in_circle((player.lat, player.lng), (zone.center_lat, zone.center_lng), zone.radius):
+                print(f"[DEBUG] zone {zone.type} has coordinate: {zone.center_lat}, {zone.center_lng}, {zone.radius}")
+                if is_point_in_circle((player.location_lat, player.location_lng), (zone.center_lat, zone.center_lng), zone.radius):
                     # Игрок внутри зоны
                     await self._apply_zone_effect_to_player(player, zone, player_service)
 
         await self.db.commit()
 
-    async def _apply_zone_effect_to_player(self, player, zone: GameZone, player_service):
+    async def _apply_zone_effect_to_player(self, player, zone: Type[GameZone] | None, player_service):
         """Применяет эффект зоны к конкретному игроку."""
         if zone.type == ZoneType.DANGER:
             # Красная зона убивает, если нет щита
-            await player_service.apply_damage(player.game_id, player.id, zone.get("damage", 100), ignore_shield=False)
+            await player_service.apply_damage(player.game_id, player.id, zone.damage, ignore_shield=False)
         elif zone.type == ZoneType.WARNING:
-            await player_service.apply_damage(player.game_id, player.id, zone.get("damage", 50), ignore_shield=False)
+            await player_service.apply_damage(player.game_id, player.id, zone.damage, ignore_shield=False)
         elif zone.type == ZoneType.AIRDROP:
             # Проверяем, не был ли уже аирдроп забран
             if zone.zone_data.get("is_claimed", False):
@@ -216,7 +221,7 @@ class ZoneService(BaseService):
         elif zone.type in (ZoneType.SAFE_MANSION, ZoneType.SAFE_HOUSE):
             player_role = await self.db.get(Role, player.role_id)
             if player_role.victory_condition == VictoryConditionType.HIDER:
-                await player_service.apply_damage(player.game_id, player.id, zone.get("damage", 10), ignore_shield=False)
+                await player_service.apply_damage(player.game_id, player.id, zone.damage, ignore_shield=False)
 
     async def get_active_zones(self, game_id: uuid.UUID) -> list[GameZone]:
         """Возвращает все активные зоны игры."""
