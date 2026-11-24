@@ -55,7 +55,8 @@ class TimerManager():
         task_key = f"{game_id}:{type_str}:{entity_id}"
 
         # Удаляем старую задачу, если есть (например, при обновлении)
-        await self.cancel(task_key)
+        if self._tasks.get(task_key) is not asyncio.current_task():
+            await self.cancel(task_key)
 
         now = datetime.now(timezone.utc)
         delay = (end_time - now).total_seconds()
@@ -80,7 +81,8 @@ class TimerManager():
                 print(f"Error in timer callback for {task_key}: {e}")
             finally:
                 async with self._cleanup_lock:
-                    self._tasks.pop(task_key, None)
+                    if self._tasks.get(task_key) is asyncio.current_task():
+                        self._tasks.pop(task_key, None)
 
         task = asyncio.create_task(_waiter())
         self._tasks[task_key] = task
@@ -329,12 +331,14 @@ class TimerManager():
             self,
             game_id: uuid.UUID,
             end_time: datetime,
-            callback: Callable[[], Awaitable[None]]
+            callback: Callable[[], Awaitable[None]],
+            timer_name: str = "TIMER"
     ):
-        type_str = "TIMER"
+        type_str = timer_name
         task_key = f"{game_id}:{type_str}"
 
-        await self.cancel(task_key)
+        if self._tasks.get(task_key) is not asyncio.current_task():
+            await self.cancel(task_key)
 
         now = datetime.now(timezone.utc)
         delay = (end_time - now).total_seconds()
@@ -362,7 +366,8 @@ class TimerManager():
             finally:
                 # Удаляем задачу из словаря после выполнения
                 async with self._cleanup_lock:
-                    self._tasks.pop(task_key, None)
+                    if self._tasks.get(task_key) is asyncio.current_task():
+                        self._tasks.pop(task_key, None)
 
         task = asyncio.create_task(_waiter())
         self._tasks[task_key] = task
@@ -375,6 +380,8 @@ class TimerManager():
             end_time: datetime,
             db: AsyncSession
     ):
+        if not events:
+            return
         type_str = "Event_generation"
         task_key = f"{game_id}:{type_str}"
 
@@ -391,37 +398,46 @@ class TimerManager():
         }
 
         async def generate_event(step_number: int, remaining_steps: int):
-            # Выбираем случайное событие на основе весов
-            chosen_event = None
-            rand_val = random.random()
-            cumulative = 0.0
-            for event in events:
-                await db.refresh(event)
-                weight = frequency_weights.get(event.activation_frequency, 0.1)
-                cumulative += weight
-                if rand_val <= cumulative:
-                    chosen_event = event
-                    break
-
-            if chosen_event:
-                # Активируем выбранное событие
-                from services.event import EventService
-                event_service = EventService(db)
-                await event_service.activate_event(game_id, chosen_event)
+            # Отложенное событие открывает новую сессию вместо закрытой сессии запроса.
+            from database.models import GameStatus
+            async for fresh_db in get_db():
+                game = await fresh_db.get(Game, game_id)
+                if not game or game.status != GameStatus.ACTIVE:
+                    return
+                chosen_event = None
+                rand_val = random.random()
+                cumulative = 0.0
+                for event_id in event_ids:
+                    event = await fresh_db.get(Event, event_id)
+                    if event is None:
+                        continue
+                    weight = frequency_weights.get(event.activation_frequency.value, 0.1)
+                    cumulative += weight
+                    if rand_val <= cumulative:
+                        chosen_event = event
+                        break
+                if chosen_event:
+                    from services.event import EventService
+                    await EventService(fresh_db).activate_event(game_id, chosen_event)
+                    await fresh_db.commit()
+                break
 
             # Если есть ещё шаги, планируем следующий через 30 секунд
             if remaining_steps > 1:
                 await self.timer(
                     game_id=game_id,
                     end_time=datetime.now(timezone.utc) + timedelta(seconds=30),
-                    callback=lambda: generate_event(step_number + 1, remaining_steps - 1)
+                    callback=lambda: generate_event(step_number + 1, remaining_steps - 1),
+                    timer_name="EVENT_GENERATION"
                 )
 
+        event_ids = [event.id for event in events]
         # события начнут генерироваться через 60 секунд
         await self.timer(
             game_id=game_id,
             end_time=datetime.now(timezone.utc) + timedelta(seconds=60),
-            callback=lambda: generate_event(1, steps)
+            callback=lambda: generate_event(1, steps),
+            timer_name="EVENT_GENERATION"
         )
 
     async def safe_zone_schedule(
@@ -460,6 +476,13 @@ class TimerManager():
                 current_radius: float,
                 remaining_steps: int
         ):
+            # Не изменяем территорию после завершения игры.
+            from database.models import GameStatus
+            async for fresh_db in get_db():
+                current_game = await fresh_db.get(Game, game_id)
+                if not current_game or current_game.status != GameStatus.ACTIVE:
+                    return
+                break
             # Расчёт нового радиуса
             new_radius = max(min_radius, current_radius - step_radius)
 
@@ -469,8 +492,12 @@ class TimerManager():
                 .where(GameZone.id == safe_zone.id)
                 .values(radius=new_radius, zone_data={"last_shrink": datetime.now(timezone.utc).isoformat()})
             )
-            await db.execute(stmt)
-            await db.commit()
+            # Таймер живёт дольше запроса, поэтому использует собственную сессию.
+            async for fresh_db in get_db():
+                await fresh_db.execute(stmt)
+                await fresh_db.execute(update(Game).where(Game.id == game_id).values(safe_zone_radius=new_radius))
+                await fresh_db.commit()
+                break
 
             # ТОЛЬКО ПОСЛЕ ЭТОГО отправляем сообщения игрокам
             await connection_manager.broadcast_to_game(

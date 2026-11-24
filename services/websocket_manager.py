@@ -57,7 +57,6 @@ class ConnectionManager:
         """
         Отправить сообщение всем игрокам в игре, кроме указанного (опционально).
         """
-        print("[BROADCAST_MESSAGE_DEBUG]: ", "Send message: ", message)
         game_key = str(game_id)
         if game_key not in self._game_connections:
             return
@@ -89,10 +88,8 @@ class ConnectionManager:
             return False
         try:
             if isinstance(message, dict):
-                print("[PERSONAL_MESSAGE_DEBUG]: ", "Send message: ", message)
                 await websocket.send_json(message)
             else:
-                print("[PERSONAL_MESSAGE_DEBUG]: ", "Send message: ", message)
                 await websocket.send_text(str(message))
             return True
         except Exception as e:

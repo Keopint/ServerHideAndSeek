@@ -4,12 +4,13 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from database.models import GameStatus, PlayerDeathCauses, Game
+from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType
 from database.db import get_db
 from services.game_management import GameService
 from services.websocket_manager import connection_manager
 from services.player import PlayerService
 from utils.conversions import to_dict, game_to_dict
+from services.catch_requests import catch_requests
 
 # Типы сообщений, которые клиент может отправлять
 CLIENT_MESSAGE_TYPES = {
@@ -20,7 +21,7 @@ CLIENT_MESSAGE_TYPES = {
     "change_ready_status",  # запрос на изменение статуса готовности
     "get_out_of_the_game",  # запрос на выбывание из игры
     "get_game_state",       # запрос полного состояния игры
-    "hunter_found_player"
+    "hunter_found_player", "respond_to_catch"
 }
 
 async def handle_client_message(
@@ -58,7 +59,7 @@ async def handle_client_message(
         if new_role_id is None:
             await connection_manager.send_personal({
                 "type": "error",
-                "data": {"message": "Missing role_id"}
+                "message": "Missing role_id"
             }, player_id)
             return
         try:
@@ -91,7 +92,7 @@ async def handle_client_message(
             traceback.print_exc()
             await connection_manager.send_personal({
                 "type": "error",
-                "data": {"message": str(e)}
+                "message": str(e)
             }, player_id)
 
     elif msg_type == "change_ready_status":
@@ -153,20 +154,7 @@ async def handle_client_message(
         try:
             await player_service.update_player_location(game_id, player_id, lat, lng)
             await db.commit()
-            # Оповестить всех игроков в игре об изменении локации (кроме отправителя)
-            await connection_manager.broadcast_to_game(
-                game_id,
-                {
-                    "type": "player_moved",
-                    "data": {
-                        "player_id": str(player_id),
-                        "location_lat": lat,
-                        "location_lng": lng,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                },
-                exclude_player=None
-            )
+            # Точные координаты не рассылаются противникам обычным обновлением.
         except ValueError as e:
             await connection_manager.send_personal({
                 "type": "error",
@@ -175,7 +163,7 @@ async def handle_client_message(
 
     elif msg_type == "use_ability":
 
-        game = await db.get(Game, game_id)
+        game = await db.get(Game, game_id, populate_existing=True)
 
         if game.status != GameStatus.ACTIVE:
             await connection_manager.send_personal({
@@ -217,13 +205,13 @@ async def handle_client_message(
             game_service = GameService(db)
             game_with_relation = await game_service.get_game_with_relations(game_id)
             player_state = await player_service.get_player_in_game(game_id, player_id)
-            print("[DEBUG] ", to_dict(player_state))
-            print("[DEBUG] ", game_to_dict(game_with_relation))
+            player_data = to_dict(player_state)
+            player_data['ability_state'] = await player_service.get_ability_state(player_id)
             await connection_manager.send_personal({
                 "type": "game_state",
                 "data": {
-                    "player_data": to_dict(player_state),
-                    "game_data": game_to_dict(game_with_relation)
+                    "player_data": player_data,
+                    "game_data": game_to_dict(game_with_relation, player_id)
                 }
             }, player_id)
         except Exception as e:
@@ -234,15 +222,54 @@ async def handle_client_message(
 
     elif msg_type == "hunter_found_player":
         try:
-            hunter_player_id = player_id
-            founded_player_id = uuid.UUID(data.get("founded_player_id"))
-            await player_service.player_died(game_id, founded_player_id, PlayerDeathCauses.HUNTER_FOUND_PLAYER, hunter_player_id)
-
+            target_id = uuid.UUID(data.get("founded_player_id"))
+            async with catch_requests.lock:
+                game = await db.get(Game, game_id, populate_existing=True)
+                hunter = await player_service.get_player_in_game(game_id, player_id)
+                target = await player_service.get_player_in_game(game_id, target_id)
+                if not game or game.status != GameStatus.ACTIVE:
+                    raise ValueError("Поимка доступна только во время игры")
+                if not hunter or not hunter.is_alive or hunter.role_ref.victory_condition != VictoryConditionType.SEEKER:
+                    raise ValueError("Отправить запрос может только активный ищущий")
+                if not target or not target.is_alive or target.role_ref.victory_condition != VictoryConditionType.HIDER:
+                    raise ValueError("Цель должна быть активным прячущимся в этой игре")
+                if not connection_manager.is_online(target_id):
+                    raise ValueError("Игрок не подключён к игре")
+                request = catch_requests.create(game_id, player_id, target_id)
+                sent = await connection_manager.send_personal({"type": "catch_requested", "data": {
+                    "request_id": str(request.id), "hunter_name": hunter.name
+                }}, target_id)
+                if not sent:
+                    catch_requests.discard(request.id)
+                    raise ValueError("Не удалось доставить запрос игроку")
+                await connection_manager.send_personal({"type": "catch_result", "data": {
+                    "message": "Запрос отправлен. Ожидайте подтверждения игрока."
+                }}, player_id)
         except Exception as e:
             await connection_manager.send_personal({
                 "type": "error",
-                "message": f"Failed to found player: {e}"
+                "message": str(e)
             }, player_id)
+    elif msg_type == "respond_to_catch":
+        try:
+            request_id = uuid.UUID(data.get("request_id"))
+            accepted = data.get("accepted")
+            if not isinstance(accepted, bool):
+                raise ValueError("Требуется подтверждение или отказ")
+            async with catch_requests.lock:
+                request = catch_requests.consume(request_id, game_id, player_id)
+                game = await db.get(Game, game_id, populate_existing=True)
+                hunter = await player_service.get_player_in_game(game_id, request.hunter_id)
+                target = await player_service.get_player_in_game(game_id, player_id)
+                if not game or game.status != GameStatus.ACTIVE or not hunter or not target or not hunter.is_alive or not target.is_alive or hunter.role_ref.victory_condition != VictoryConditionType.SEEKER or target.role_ref.victory_condition != VictoryConditionType.HIDER:
+                    raise ValueError("Подтверждение больше недоступно")
+                if accepted:
+                    await player_service.player_died(game_id, player_id, PlayerDeathCauses.HUNTER_FOUND_PLAYER, request.hunter_id)
+                await connection_manager.send_personal({"type": "catch_result", "data": {
+                    "message": "Игрок подтвердил поимку." if accepted else "Игрок отклонил запрос о поимке."
+                }}, request.hunter_id)
+        except Exception as e:
+            await connection_manager.send_personal({"type": "error", "message": str(e)}, player_id)
     else:
         await connection_manager.send_personal({
             "type": "error",
@@ -298,15 +325,13 @@ def register_websocket_endpoint(app):
                 game_data = await game_service.get_game_with_relations(game_id)
 
                 print(f"[DEBUG] Sending websocket_connected_player to {player_id}")
-                print(f"[DEBUG] player_data: {to_dict(initial_state)}")
-                print(f"[DEBUG] game_data: {game_to_dict(game_data)}")
 
                 await connection_manager.send_personal(
                     message={
                         "type": "websocket_connected_player",
                         "data": {
                             "player_data": to_dict(initial_state),
-                            "game_data": game_to_dict(game_data)
+                            "game_data": game_to_dict(game_data, player_id)
                         }
                     },
                     player_id=player_id
@@ -316,7 +341,6 @@ def register_websocket_endpoint(app):
                 while True:
                     try:
                         message = await websocket.receive_json()  # ← уже dict
-                        print(f"[DEBUG] Message: {message}")
                         await handle_client_message(game_id, player_id, message, db)
                     except json.JSONDecodeError:
                         await connection_manager.send_personal({

@@ -166,7 +166,8 @@ class GameZone(Base):
     __tablename__ = "game_zones"
 
     id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    game_id = Column(UUID, ForeignKey("games.id"))
+    # Связи добавляются после создания таблиц из-за цикла games → zones → players.
+    game_id = Column(UUID, ForeignKey("games.id", use_alter=True, name="game_zones_game_id_fkey"))
     type = Column(Enum(ZoneType))
     center_lat = Column(Float, nullable=False)
     center_lng = Column(Float, nullable=False)
@@ -174,7 +175,7 @@ class GameZone(Base):
     damage = Column(Integer, default=0)
     starts_at = Column(DateTime(timezone=True))
     ends_at = Column(DateTime(timezone=True))
-    created_by = Column(UUID, ForeignKey("players.id"), nullable=True)
+    created_by = Column(UUID, ForeignKey("players.id", use_alter=True, name="game_zones_created_by_fkey"), nullable=True)
     is_active = Column(Boolean, default=True)
     zone_data = Column(JSONB, nullable=False, default={})
 

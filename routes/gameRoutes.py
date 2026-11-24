@@ -1,5 +1,7 @@
 import uuid
-from fastapi import HTTPException, Depends
+import os
+from urllib.parse import urlsplit, urlunsplit
+from fastapi import HTTPException, Depends, Request
 from typing import Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from services.game_management import GameService
@@ -50,6 +52,7 @@ async def start_game(
 @game_router.api_route("/api/connect_player/{game_code}", methods=["POST"])
 async def connect_player(
         game_code: str,
+        request: Request,
         data: Dict[str, Any],
         db: AsyncSession = Depends(get_db)
 ):
@@ -73,16 +76,24 @@ async def connect_player(
         raise HTTPException(status_code=422, detail="Invalid longitude")
 
     try:
+        # Проверяем настройки до записи игрока в базу.
+        base = os.environ.get("PUBLIC_BASE_URL", "").strip() or str(request.base_url).rstrip("/")
+        parts = urlsplit(base)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("PUBLIC_BASE_URL должен быть HTTP(S) URL")
         service = GameService(db)
         new_player = await service.add_player(game_code, data)
         game = await service.get_game_with_relations(new_player.game_id)
 
+        # При обратном прокси можно задать внешний HTTPS-адрес явно.
+        ws_url = urlunsplit(("wss" if parts.scheme == "https" else "ws", parts.netloc,
+                             parts.path.rstrip("/") + f"/ws/{game.id}/{new_player.id}", "", ""))
         return {
             "game_id": str(game.id),
             "player_id": str(new_player.id),
             "player_name": new_player.name,
             "game_status": "WAITING",
-            "ws_url": f"ws://shrunk-scrambler-gauze.ngrok-free.dev/ws/{str(game.id)}/{str(new_player.id)}"
+            "ws_url": ws_url
         }
     except HTTPException:
         raise

@@ -235,8 +235,22 @@ class GameService(BaseService):
 
     async def start_game(self, game_id: uuid.UUID) -> Type[Game]:
         try:
+            # Блокировка не позволяет двум запросам запустить одну игру одновременно.
+            result = await self.db.execute(select(Game).where(Game.id == game_id).with_for_update())
+            game = result.scalar_one_or_none()
+            if not game or game.status != GameStatus.WAITING:
+                raise ValueError("Игра уже началась или не найдена")
             player_service = PlayerService(self.db)
             players = await player_service.get_players_in_game(game_id=game_id)
+            if len(players) < 2:
+                raise ValueError("Для начала нужны минимум два игрока")
+            role_types = set()
+            for player in players:
+                role = await self.db.get(Role, player.role_id)
+                if role:
+                    role_types.add(role.victory_condition)
+            if not {VictoryConditionType.SEEKER, VictoryConditionType.HIDER}.issubset(role_types):
+                raise ValueError("Нужны хотя бы один ищущий и один прячущийся")
             all_is_ready = True
             for player in players:
                 if not player.is_player_ready:
@@ -245,7 +259,6 @@ class GameService(BaseService):
             if not all_is_ready:
                 raise ValueError("Not all players active")
 
-            game = await self.get_game_with_relations(game_id)
             game.status = GameStatus.HIDE_TIME
 
             await self.db.commit()
@@ -283,7 +296,10 @@ class GameService(BaseService):
                 "data": {}
             }
         )
-        await self.start_active_game(game_id)
+        from database.db import get_db
+        async for db in get_db():
+            await GameService(db).start_active_game(game_id)
+            break
 
     async def start_active_game(self, game_id: uuid.UUID):
         try:
@@ -334,7 +350,10 @@ class GameService(BaseService):
             raise ValueError(f"Ошибка при запуске активной фазы игры или во время игры: {str(e)}")
 
     async def _on_game_timer_finished_callback(self, game_id: uuid.UUID):
-        await self.finish_game(game_id)
+        from database.db import get_db
+        async for db in get_db():
+            await GameService(db).finish_game(game_id)
+            break
         return
 
 
@@ -352,15 +371,9 @@ class GameService(BaseService):
     async def finish_game(self, game_id: uuid.UUID):
         try:
             game = await self.db.get(Game, game_id)
+            if not game or game.status == GameStatus.FINISHED:
+                return
             game.status = GameStatus.FINISHED
-
-            await connection_manager.broadcast_to_game(
-                game_id=game_id,
-                message={
-                    "type": "game_finished",
-                    "data": {}
-                }
-            )
 
             player_service = PlayerService(self.db)
             players = await player_service.get_players_in_game(game_id)
@@ -447,6 +460,8 @@ class GameService(BaseService):
                 last_location_update=datetime.now(timezone.utc)
             )
             self.db.add(new_player)
+            await self.db.flush()
+            await PlayerService(self.db).set_role_abilities(new_player)
             await self.db.commit()
             await self.db.refresh(new_player)
             return new_player

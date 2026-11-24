@@ -4,8 +4,8 @@ from typing import Dict, Set, Type
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Game, Player, ZoneType, GameZone, AbilityType, Ability, Role, VictoryConditionType
-from sqlalchemy import select
+from database.models import Game, GameStatus, Player, PlayerAbility, ZoneType, GameZone, AbilityType, Ability, Role, VictoryConditionType, EffectType
+from sqlalchemy import select, or_
 from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
@@ -81,26 +81,26 @@ class ZoneService(BaseService):
             radius=radius,
             starts_at=now,
             ends_at=now + timedelta(seconds=duration_seconds) if duration_seconds is not None else None,
-            damage=damage,
+            damage=int(damage) if damage is not None else None,
             created_by=creator_id,
             is_active=True
         )
         self.db.add(zone)
         await self.db.flush()  # получаем zone.id
 
-        await connection_manager.broadcast_to_game(
-            game_id=game_id,
-            message={
-                "type": "create_zone",
-                "data": {
-                    "zone_id": str(zone.id),
-                    "zone_type": str(zone_type.value),
-                    "center_lat": center_lat,
-                    "center_lng": center_lng,
-                    "radius": radius
-                }
-            }
-        )
+        # Ловушки видны только участникам стороны установившего их игрока.
+        players = (await self.db.execute(select(Player, Role.victory_condition)
+                   .join(Role, Player.role_id == Role.id).where(Player.game_id == game_id))).all()
+        creator_side = next((side for player, side in players if player.id == creator_id), None)
+        for recipient, side in players:
+            if zone_type in (ZoneType.TRAP, ZoneType.SNARE) and (creator_side is None or side != creator_side):
+                continue
+            visible_type = (ZoneType.DANGER if zone_type in (ZoneType.SAFE_HOUSE, ZoneType.SAFE_MANSION)
+                            and side == VictoryConditionType.SEEKER else zone_type)
+            await connection_manager.send_personal({'type': 'create_zone', 'data': {
+                'zone_id': str(zone.id), 'zone_type': visible_type.value,
+                'center_lat': center_lat, 'center_lng': center_lng, 'radius': radius
+            }}, recipient.id)
         print(f"[DEBUG] zone.ends_at: {zone.ends_at}")
         if zone.ends_at is not None:
             # Планируем завершение
@@ -110,7 +110,7 @@ class ZoneService(BaseService):
                 entity_type=TimerType.ZONE,
                 entity_id=zone.id,
                 end_time=zone.ends_at,
-                callback=lambda: self.handle_zone_expired(game_id, zone.id)
+                callback=lambda: _on_zone_expired_callback(game_id, zone.id)
             )
 
         return zone
@@ -128,33 +128,24 @@ class ZoneService(BaseService):
         game = await self.db.get(Game, game_id)
         if not game:
             return
+        if game.status != GameStatus.ACTIVE:
+            await self.db.commit()
+            return
 
         stmt = select(Player).where(Player.game_id == game_id, Player.is_alive == True)
         result = await self.db.execute(stmt)
         players = result.scalars().all()
 
         from services.player import PlayerService
-        from database.db import get_db
-        async for db in get_db():
-            player_service = PlayerService(db)
-
-            await connection_manager.broadcast_to_game(
-                game_id=game_id,
-                message={
-                    "type": "delete_zone",
-                    "data": {
-                        "zone_id": str(zone.id)
-                    }
-                }
-            )
-            for player in players:
-                print(f"[DEBUG] player {player.name} has coordinate: {player.location_lat}, {player.location_lng}")
-                if player.location_lat is None or player.location_lng is None:
-                    continue
-                print(f"[DEBUG] zone {zone.type} has coordinate: {zone.center_lat}, {zone.center_lng}, {zone.radius}")
-                if is_point_in_circle((player.location_lat, player.location_lng), (zone.center_lat, zone.center_lng), zone.radius):
-                    # Игрок внутри зоны
-                    await self._apply_zone_effect_to_player(player, zone, player_service)
+        player_service = PlayerService(self.db)
+        await connection_manager.broadcast_to_game(game_id=game_id, message={
+            "type": "delete_zone", "data": {"zone_id": str(zone.id)}
+        })
+        for player in players:
+            if player.location_lat is None or player.location_lng is None:
+                continue
+            if is_point_in_circle((player.location_lat, player.location_lng), (zone.center_lat, zone.center_lng), zone.radius):
+                await self._apply_zone_effect_to_player(player, zone, player_service)
 
         await self.db.commit()
 
@@ -170,58 +161,64 @@ class ZoneService(BaseService):
             if zone.zone_data.get("is_claimed", False):
                 return
             # Отмечаем зону как забранную, чтобы другие игроки не получили способность
-            zone.zone_data["is_claimed"] = True
+            zone.zone_data = {**zone.zone_data, "is_claimed": True}
+            zone.is_active = False
             # Выбираем случайную сильную способность
             strong_ability_types = [AbilityType.SAFE_MANSION, AbilityType.SCAN, AbilityType.TRAP]
             chosen_type = random.choice(strong_ability_types)
             # Ищем соответствующую способность в БД (по ability_type)
-            stmt = select(Ability).where(
-                Ability.ability_type == chosen_type
-            )
+            # Если такая способность уже есть у игрока, увеличиваем её запас,
+            # а не создаём вторую запись того же типа.
+            stmt = (select(Ability).join(PlayerAbility, PlayerAbility.ability_id == Ability.id)
+                    .where(PlayerAbility.player_id == player.id, Ability.ability_type == chosen_type))
             result = await self.db.execute(stmt)
-            ability = result.scalar_one_or_none()
+            ability = result.scalars().first()
             if not ability:
                 # Если такой способности нет в БД – создаём (можно с параметрами по умолчанию)
                 ability = Ability(
                     ability_type=chosen_type,
                     recharge_time=60,
                     number_uses=1,
-                    duration_seconds=None,
-                    data={}
+                    duration_seconds=120,
+                    data={"radius": 10, "trap_duration_seconds": 60}
                 )
                 self.db.add(ability)
                 await self.db.flush()
             # Добавляем способность игроку
-            await player_service.add_ability(player.game_id, player.id, ability.id, number_uses=1)
+            player_ability = await player_service.add_ability(player.game_id, player.id, ability.id, number_uses=1)
             # Обновляем запись зоны (чтобы сохранить флаг is_claimed)
             self.db.add(zone)
             await self.db.commit()
             # Уведомить игрока о получении способности (отдельным сообщением)
+            ability_data = to_dict(ability)
+            ability_data['number_uses'] = player_ability.number_uses_left
             await connection_manager.send_personal({
                 "type": "airdrop_collected",
-                "data": {"ability": to_dict(ability)}
+                "data": {"ability": ability_data}
             }, player.id)
+            await connection_manager.broadcast_to_game(player.game_id, {'type': 'delete_zone', 'data': {'zone_id': str(zone.id)}})
 
         elif zone.type in (ZoneType.TRAP, ZoneType.SNARE):
             # Капкан или ловушка — накладываем эффект обездвиживания
-            trap_duration = zone.zone_data.get("trap_duration_seconds")
-            from services.effect import EffectService
-            effect_service = EffectService(self.db)
-            await effect_service.apply_trapped_effect(
-                player_id=player.id,
-                game_id=player.game_id,
-                zone_id=zone.id,
-                duration_seconds=trap_duration,
-                single_use=zone.single_use
-            )
-            if zone.single_use:
-                zone.is_active = False
-                self.db.add(zone)
+            if zone.created_by == player.id:
+                return
+            role = await self.db.get(Role, player.role_id)
+            if not role or role.victory_condition != VictoryConditionType.HIDER:
+                return
+            trap_duration = max(1, int((zone.zone_data or {}).get("trap_duration_seconds", 60)))
+            effect = await player_service.apply_effect(player.game_id, player.id, EffectType.TRAPPED, trap_duration)
+            effect.data = {'zone_id': str(zone.id), 'center_lat': zone.center_lat,
+                           'center_lng': zone.center_lng, 'radius': zone.radius}
+            zone.is_active = False
+            self.db.add(zone)
+            await connection_manager.broadcast_to_game(player.game_id, {'type': 'delete_zone', 'data': {'zone_id': str(zone.id)}})
+            await connection_manager.send_personal({'type': 'error', 'message': f'Вы попали в ловушку. Оставайтесь рядом {trap_duration} сек.'}, player.id)
+            seekers = (await self.db.execute(select(Player).join(Role, Player.role_id == Role.id)
+                        .where(Player.game_id == player.game_id, Role.victory_condition == VictoryConditionType.SEEKER))).scalars().all()
+            for seeker in seekers:
+                await connection_manager.send_personal({'type': 'error', 'message': f'Игрок {player.name} попал в ловушку.'}, seeker.id)
 
-        elif zone.type in (ZoneType.SAFE_MANSION, ZoneType.SAFE_HOUSE):
-            player_role = await self.db.get(Role, player.role_id)
-            if player_role.victory_condition == VictoryConditionType.HIDER:
-                await player_service.apply_damage(player.game_id, player.id, zone.damage, ignore_shield=False)
+        # Защитные зоны не должны наносить урон при исчезновении.
 
     async def get_active_zones(self, game_id: uuid.UUID) -> list[GameZone]:
         """Возвращает все активные зоны игры."""
@@ -230,7 +227,7 @@ class ZoneService(BaseService):
             GameZone.game_id == game_id,
             GameZone.is_active == True,
             GameZone.starts_at <= now,
-            GameZone.ends_at > now
+            or_(GameZone.ends_at.is_(None), GameZone.ends_at > now)
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
@@ -240,67 +237,19 @@ class ZoneService(BaseService):
             Проверяет, в каких зонах находится игрок, и отправляет уведомления о входе/выходе.
             Эффекты зон (ловушки, аирдроп) применяются при входе (один раз).
             """
-        from database.db import get_db
         from services.player import PlayerService
-
-        async for db in get_db():
-            player_service = PlayerService(db)
-
-            player = await player_service.get_player_in_game(game_id, player_id)
-            if not player or not player.is_alive:
-                return
-
-            # Получаем все активные зоны игры
-            zones = await self.get_active_zones(game_id)
-            current_zone_ids = set()
-
-            for zone in zones:
-                if is_point_in_circle(
-                        (player.location_lat, player.location_lng),
-                        (zone.center_lat, zone.center_lng),
-                        zone.radius
-                ):
-                    current_zone_ids.add(zone.id)
-
-            # Предыдущие зоны игрока
-            prev_zone_ids = self._player_zones_cache.get(player_id, set())
-
-            # Определяем вошедшие и вышедшие зоны
-            entered_zones = current_zone_ids - prev_zone_ids
-            exited_zones = prev_zone_ids - current_zone_ids
-
-            # Уведомления о входе и применение эффектов (один раз)
-            for zone_id in entered_zones:
-                zone = next(z for z in zones if z.id == zone_id)
-                # Личное сообщение игроку
-                await connection_manager.send_personal({
-                    "type": "player_entered_zone",
-                    "data": {
-                        "zone_id": str(zone.id),
-                        "zone_type": zone.type.value,
-                        "center_lat": zone.center_lat,
-                        "center_lng": zone.center_lng,
-                        "radius": zone.radius
-                    }
-                }, player_id)
-
-                # Мгновенные эффекты при входе
-                if zone.type in (ZoneType.TRAP, ZoneType.SNARE, ZoneType.AIRDROP):
-                    await self._apply_zone_effect_to_player(player, zone, player_service)
-
-            # Уведомления о выходе
-            for zone_id in exited_zones:
-                zone = next(z for z in zones if z.id == zone_id)
-                await connection_manager.send_personal({
-                    "type": "player_exited_zone",
-                    "data": {
-                        "zone_id": str(zone.id),
-                        "zone_type": zone.type.value
-                    }
-                }, player_id)
-
-            # Обновляем кэш
-            self._player_zones_cache[player_id] = current_zone_ids
+        # Используем ту же транзакцию, где только что обновились координаты.
+        player_service = PlayerService(self.db)
+        player = await player_service.get_player_in_game(game_id, player_id)
+        if not player or not player.is_alive:
+            return
+        zones = await self.get_active_zones(game_id)
+        for zone in zones:
+            if zone.type not in (ZoneType.TRAP, ZoneType.SNARE, ZoneType.AIRDROP):
+                continue
+            if is_point_in_circle((player.location_lat, player.location_lng),
+                                  (zone.center_lat, zone.center_lng), zone.radius):
+                await self._apply_zone_effect_to_player(player, zone, player_service)
 
     def clear_player_cache(self, player_id: uuid.UUID):
         self._player_zones_cache.pop(player_id, None)

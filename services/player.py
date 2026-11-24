@@ -1,11 +1,12 @@
 import uuid
+import math
 
 from sqlalchemy.orm import selectinload
 
 from database.models import (Game, Player, GameStatus, PlayerEffect,
                              EffectType, AbilityType, PlayerAbility, Ability, ZoneType, Role, PlayerDeathCauses,
-                             GameZone, role_abilities, game_roles, VictoryConditionType)
-from sqlalchemy import select
+                             GameZone, role_abilities, game_roles, VictoryConditionType, UsedAbility)
+from sqlalchemy import select, delete
 from datetime import datetime, timezone, timedelta
 from services.zone import ZoneService
 from services.base import BaseService
@@ -46,6 +47,25 @@ class PlayerService(BaseService):
         players = (await self.db.execute(stmt)).scalars().all()
         return players
 
+    async def get_ability_state(self, player_id: uuid.UUID):
+        """Персональный остаток и откат для восстановления интерфейса."""
+        rows = (await self.db.execute(select(PlayerAbility, Ability)
+                .join(Ability, PlayerAbility.ability_id == Ability.id)
+                .where(PlayerAbility.player_id == player_id))).all()
+        now = datetime.now(timezone.utc)
+        abilities = []
+        for owned, ability in rows:
+            last = (await self.db.execute(select(UsedAbility.used_at)
+                    .where(UsedAbility.player_id == player_id, UsedAbility.ability_id == ability.id)
+                    .order_by(UsedAbility.used_at.desc()).limit(1))).scalar_one_or_none()
+            remaining_ms = max(0, int(((last + timedelta(seconds=ability.recharge_time)) - now).total_seconds() * 1000)) if last else 0
+            abilities.append({
+                'ability_type': ability.ability_type.value, 'number_uses_left': owned.number_uses_left,
+                'recharge_time': ability.recharge_time, 'duration_seconds': ability.duration_seconds,
+                'data': ability.data or {}, 'cooldown_remaining_ms': remaining_ms,
+            })
+        return abilities
+
     async def get_active_player_effects(self, player_id: uuid.UUID) -> list[PlayerEffect]:
         """
         Возвращает список активных эффектов для указанного игрока.
@@ -78,70 +98,39 @@ class PlayerService(BaseService):
         if not player:
             raise ValueError(f"Player {player_id} not found in game {game_id}")
 
-        game = await self.db.get(Game, game_id)
+        # Другая сессия могла изменить фазу игры или радиус безопасной зоны.
+        game = await self.db.get(Game, game_id, populate_existing=True)
         if not game:
             raise ValueError(f"Game {game_id} not found")
-        if game.status not in (GameStatus.ACTIVE, GameStatus.WAITING):
+        if game.status not in (GameStatus.ACTIVE, GameStatus.WAITING, GameStatus.HIDE_TIME):
             raise ValueError("Game is not active")
+        if not player.is_alive:
+            raise ValueError("Player is no longer active")
 
-        # Проверяем, не находится ли игрок под действием эффекта, запрещающего движение
-        if await self.is_movement_restricted(player_id):
-            raise ValueError("Player is trapped and cannot move")
-
-        # Сохраняем старые координаты (для возможного отката, но проще просто обновить)
-        player.lat = lat
-        player.lng = lng
+        # Реальное положение сохраняется даже при действии ловушки.
+        player.location_lat = lat
+        player.location_lng = lng
         player.last_location_update = datetime.now(timezone.utc)
-
-        # Проверка выхода за границы игровой зоны (если заданы)
-
-        if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
-            distance = calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng)
-            if distance > game.safe_zone_radius:
-                # Наносим урон за выход
-                await self._apply_boundary_damage(player, game)
-        if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
-            player_active_effects = await self.get_active_player_effects(player_id)
-            has_trap_effect = any(
-                effect.type in (EffectType.TRAPPED, EffectType.ROOTED) for effect in player_active_effects)
-
-            # 2. Активные зоны-ловушки (TRAP или SNARE)
-            now = datetime.now(timezone.utc)
-            trap_zones_query = select(GameZone).where(
-                GameZone.game_id == game_id,
-                GameZone.type.in_([ZoneType.TRAP, ZoneType.SNARE]),
-                GameZone.is_active == True,
-                GameZone.starts_at <= now,
-                (GameZone.ends_at == None) | (GameZone.ends_at > now)
-            )
-            trap_zones = (await self.db.execute(trap_zones_query)).scalars().all()
-
-            # Проверяем, находится ли игрок в любой из этих зон
-            is_in_trap_zone = False
-            for zone in trap_zones:
-                distance = calculate_distance(player.location_lat, player.location_lng,
-                                              zone.center_lat, zone.center_lng)
-                if distance <= zone.radius:
-                    is_in_trap_zone = True
-                    break
-
-            # 3. Если игрок не защищён ни эффектом, ни нахождением в зоне-ловушке
-            if not has_trap_effect and not is_in_trap_zone:
-                # Проверка выхода за границу безопасной зоны
-                distance_to_safe_center = calculate_distance(
-                    player.location_lat, player.location_lng,
-                    game.safe_zone_center_lat, game.safe_zone_center_lng
-                )
-                if distance_to_safe_center > game.safe_zone_radius:
-                    # Игрок выбывает
-                    player.is_alive = False
-                    player_service = PlayerService(self.db)
-                    await player_service.player_died(game_id, player_id, death_cause=PlayerDeathCauses.LEAVE_TRAP)
-
-        zone_service = ZoneService(self.db)
-        await zone_service.check_player_in_zones(game_id, player_id)
-
         self.db.add(player)
+        await self.db.flush()
+        # Урон за границу применяется только в активной фазе, не в лобби.
+        if game.status == GameStatus.ACTIVE:
+            effects = await self.get_active_player_effects(player_id)
+            for effect in effects:
+                trap = effect.data or {}
+                if (effect.type == EffectType.TRAPPED and
+                    all(key in trap for key in ('center_lat', 'center_lng', 'radius')) and
+                    calculate_distance(lat, lng, trap['center_lat'], trap['center_lng']) > trap['radius']):
+                    await connection_manager.send_personal({
+                        'type': 'error', 'message': 'Вы вышли из ловушки. Вернитесь к месту срабатывания до окончания действия.'
+                    }, player_id)
+            if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
+                distance = calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng)
+                if distance > game.safe_zone_radius:
+                    await self.apply_damage(game_id, player_id, game.zone_boundary_damage, ignore_shield=True)
+            if player.is_alive:
+                zone_service = ZoneService(self.db)
+                await zone_service.check_player_in_zones(game_id, player_id)
         return player
 
     async def change_player_role(
@@ -154,6 +143,14 @@ class PlayerService(BaseService):
         player = await self.get_player_in_game(game_id, player_id)
         if not player:
             raise ValueError("Player not found in game")
+        # WebSocket-сессия живёт долго: статус мог измениться в другом соединении.
+        game = await self.db.get(Game, game_id, populate_existing=True)
+        if not game or game.status != GameStatus.WAITING:
+            raise ValueError("Роль можно изменить только в лобби")
+        role_in_game = await self.db.execute(select(game_roles.c.role_id).where(
+            game_roles.c.game_id == game_id, game_roles.c.role_id == new_role_id))
+        if role_in_game.scalar_one_or_none() is None:
+            raise ValueError("Роль не принадлежит этой игре")
         # Проверяем существование новой роли
         role = await self.db.get(Role, new_role_id)
         if not role:
@@ -162,7 +159,19 @@ class PlayerService(BaseService):
         player.role_id = new_role_id
         # Дополнительно можно обновить здоровье в соответствии с ролью
         player.health = role.health
+        await self.set_role_abilities(player)
         await self.db.commit()
+
+    async def set_role_abilities(self, player):
+        """В лобби заменяем способности игрока набором выбранной роли."""
+        await self.db.execute(delete(PlayerAbility).where(PlayerAbility.player_id == player.id))
+        result = await self.db.execute(
+            select(Ability).join(role_abilities, Ability.id == role_abilities.c.ability_id)
+            .where(role_abilities.c.role_id == player.role_id)
+        )
+        for ability in result.scalars().all():
+            self.db.add(PlayerAbility(player_id=player.id, ability_id=ability.id,
+                                      number_uses_left=ability.number_uses))
 
     async def add_ability(
             self,
@@ -180,7 +189,6 @@ class PlayerService(BaseService):
             player = await self.get_player_in_game(game_id, player_id)
             if not player:
                 raise ValueError(f"Player {player_id} not found in game {game_id}")
-
             # Проверяем существование способности
             ability = await self.db.get(Ability, ability_id)
             if not ability:
@@ -225,6 +233,11 @@ class PlayerService(BaseService):
             player = await self.get_player_in_game(game_id, player_id)
             if not player:
                 raise ValueError(f"Player {player_id} not found in game {game_id}")
+            game = await self.db.get(Game, game_id)
+            if not game or game.status != GameStatus.WAITING:
+                raise ValueError("Готовность можно изменить только в лобби")
+            if not isinstance(new_ready_status, bool):
+                raise ValueError("Неверное значение готовности")
             player.is_player_ready = new_ready_status
             self.db.add(player)
             return player
@@ -243,7 +256,7 @@ class PlayerService(BaseService):
             PlayerEffect.type.in_([EffectType.TRAPPED, EffectType.ROOTED])
         )
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        return result.scalars().first() is not None
 
     async def _apply_boundary_damage(self, player: Player, game: Game):
         """Наносит урон игроку за выход за границы игровой зоны."""
@@ -356,7 +369,7 @@ class PlayerService(BaseService):
             PlayerEffect.ends_at > now
         )
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        return result.scalars().first() is not None
 
     async def consume_shield(self, player_id: uuid.UUID):
         """Снимает активный щит с игрока."""
@@ -367,7 +380,7 @@ class PlayerService(BaseService):
             PlayerEffect.is_active == True
         )
         result = await self.db.execute(stmt)
-        shield = result.scalar_one_or_none()
+        shield = result.scalars().first()
         if shield:
             shield.is_active = False
             self.db.add(shield)
@@ -383,6 +396,9 @@ class PlayerService(BaseService):
             player = await self.get_player_in_game(game_id, player_id)
             if not player:
                 raise ValueError("Player not found in game")
+            game = await self.db.get(Game, game_id, populate_existing=True)
+            if not game or game.status != GameStatus.ACTIVE or not player.is_alive:
+                raise ValueError("Способность доступна только активному игроку")
 
             # 2. Преобразуем строку в enum AbilityType
             try:
@@ -396,20 +412,51 @@ class PlayerService(BaseService):
                 .join(Ability, PlayerAbility.ability_id == Ability.id)
                 .where(PlayerAbility.player_id == player_id)
                 .where(Ability.ability_type == ability_enum)
+                .with_for_update(of=PlayerAbility)
             )
             result = await self.db.execute(stmt)
             player_ability = result.scalar_one_or_none()
             if not player_ability:
-                raise ValueError(f"Player {player_id} does not have ability {player_ability.ability_id}")
+                raise ValueError("У игрока нет этой способности")
 
             if player_ability.number_uses_left <= 0:
                 raise ValueError(f"Player {player_id} has no more uses of ability {ability_type}")
 
-            player_ability.number_uses_left -= 1
-
             ability = await self.db.get(Ability, player_ability.ability_id)
-
-            print(to_dict(ability))
+            if not ability or not ability.duration_seconds or ability.duration_seconds <= 0 or ability.recharge_time < 0:
+                raise ValueError("Некорректная длительность способности")
+            last_use = (await self.db.execute(select(UsedAbility.used_at)
+                        .where(UsedAbility.player_id == player_id, UsedAbility.ability_id == ability.id)
+                        .order_by(UsedAbility.used_at.desc()).limit(1))).scalar_one_or_none()
+            if last_use and datetime.now(timezone.utc) < last_use + timedelta(seconds=ability.recharge_time):
+                raise ValueError("Способность ещё перезаряжается")
+            if ability_enum in (AbilityType.INTEL, AbilityType.SCAN):
+                active = await self.get_active_player_effects(player_id)
+                if any(effect.type in (EffectType.INTEL, EffectType.SCAN) for effect in active):
+                    raise ValueError("Другая способность обнаружения уже действует")
+            if ability_enum == AbilityType.SHIELD and await self.has_active_shield(player_id):
+                raise ValueError("Щит уже активен")
+            if ability_enum in (AbilityType.SAFE_HOUSE, AbilityType.SAFE_MANSION, AbilityType.SNARE):
+                lat, lng = player.location_lat, player.location_lng
+            if ability_enum in (AbilityType.TRAP, AbilityType.SNARE, AbilityType.PERSONAL_BOMB, AbilityType.SAFE_HOUSE, AbilityType.SAFE_MANSION):
+                if (isinstance(lat, bool) or isinstance(lng, bool) or
+                    not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)) or
+                    not math.isfinite(lat) or not math.isfinite(lng) or not validate_coordinates(lat, lng)):
+                    raise ValueError("Укажите корректную точку на карте")
+                radius = (ability.data or {}).get('radius')
+                if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not math.isfinite(radius) or radius <= 0:
+                    raise ValueError("Некорректный радиус способности")
+                if ability_enum == AbilityType.PERSONAL_BOMB:
+                    damage = ability.data.get('damage')
+                    if (isinstance(damage, bool) or not isinstance(damage, (int, float)) or
+                        not math.isfinite(damage) or damage <= 0 or int(damage) != damage):
+                        raise ValueError("Некорректный урон бомбы")
+                if calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng) > game.safe_zone_radius:
+                    raise ValueError("Точка способности находится за пределами игровой зоны")
+            player_ability.number_uses_left -= 1
+            self.db.add(UsedAbility(player_id=player_id, ability=ability_enum, ability_id=ability.id,
+                                    used_at=datetime.now(timezone.utc), location_lat=player.location_lat,
+                                    location_lng=player.location_lng))
 
             if AbilityType(ability_type) == AbilityType.SHIELD:
                 await self.apply_effect(
@@ -418,18 +465,18 @@ class PlayerService(BaseService):
                     EffectType.SHIELD,
                     ability.duration_seconds
                 )
-            elif AbilityType(ability_type) == AbilityType.SCAN:
+            elif AbilityType(ability_type) == AbilityType.INTEL:
                 await self.apply_effect(
                     game_id,
                     player_id,
                     EffectType.INTEL,
                     ability.duration_seconds
                 )
-            elif AbilityType(ability_type) == AbilityType.TRAP:
+            elif AbilityType(ability_type) in (AbilityType.TRAP, AbilityType.SNARE):
                 zone_service = ZoneService(self.db)
-                await zone_service.create_zone(
+                zone = await zone_service.create_zone(
                     game_id,
-                    ZoneType.TRAP,
+                    ZoneType.TRAP if ability_enum == AbilityType.TRAP else ZoneType.SNARE,
                     lat,
                     lng,
                     ability.duration_seconds,
@@ -437,6 +484,7 @@ class PlayerService(BaseService):
                     ability.data.get("damage"),
                     player_id
                 )
+                zone.zone_data = {'trap_duration_seconds': int(ability.data.get('trap_duration_seconds', 60))}
             elif AbilityType(ability_type) == AbilityType.PERSONAL_BOMB:
                 print("[DEBUG ABILITY TYPE ACTIVATION]")
                 zone_service = ZoneService(self.db)
@@ -447,7 +495,7 @@ class PlayerService(BaseService):
                     lng,
                     ability.duration_seconds,
                     ability.data.get("radius"),
-                    ability.data.get("damage"),
+                    int(ability.data["damage"]),
                     player_id
                 )
             elif AbilityType(ability_type) == AbilityType.SAFE_HOUSE:
@@ -474,24 +522,8 @@ class PlayerService(BaseService):
                     ability.data.get("damage"),
                     player_id
                 )
-            elif AbilityType(ability_type) == AbilityType.INTEL:
-                await self.handle_scan_effect(
-                    game_id,
-                    player_id,
-                    ability.duration_seconds
-                )
-            elif AbilityType(ability_type) == AbilityType.SAFE_HOUSE:
-                zone_service = ZoneService(self.db)
-                await zone_service.create_zone(
-                    game_id,
-                    ZoneType.SAFE_HOUSE,
-                    lat,
-                    lng,
-                    ability.duration_seconds,
-                    ability.data.get("radius"),
-                    ability.data.get("damage"),
-                    player_id
-                )
+            elif AbilityType(ability_type) == AbilityType.SCAN:
+                await self.apply_effect(game_id, player_id, EffectType.SCAN, ability.duration_seconds)
             return 0
         except Exception:
             await self.db.rollback()
@@ -522,21 +554,12 @@ class PlayerService(BaseService):
             self.db.add(new_player_effect)
             await self.db.flush()
 
-            if effect_type == EffectType.INTEL:
-                await timer_manager.intel_ability_shedule(
-                    game_id=game_id,
-                    player_id=player_id,
-                    effect=new_player_effect,
-                    end_time=new_player_effect.ends_at,
-                    callback=lambda: self._on_effect_expired_callback(game_id, new_player_effect.id)
-                )
-            elif effect_type == EffectType.SCAN:
-                await timer_manager.scan_ability_shedule(
-                    game_id=game_id,
-                    player_id=player_id,
-                    effect=new_player_effect,
-                    end_time=new_player_effect.ends_at,
-                    callback=lambda: self._on_effect_expired_callback(game_id, new_player_effect.id)
+            if effect_type in (EffectType.INTEL, EffectType.SCAN):
+                from services.visibility import visibility_tick
+                await timer_manager.schedule(
+                    game_id, TimerType.EFFECT, new_player_effect.id,
+                    now + timedelta(milliseconds=100),
+                    lambda: visibility_tick(game_id, player_id, new_player_effect.id)
                 )
             else:
                 await timer_manager.schedule(
@@ -547,6 +570,8 @@ class PlayerService(BaseService):
                     callback=lambda: self._on_effect_expired_callback(game_id, new_player_effect.id)
                 )
 
+            return new_player_effect
+
         except Exception:
             await self.db.rollback()
             raise
@@ -556,7 +581,7 @@ class PlayerService(BaseService):
         # Импортируем здесь, чтобы избежать циклических зависимостей
         from database.db import get_db
         async for db in get_db():
-            await self.handle_effect_expired(game_id, effect_id)
+            await PlayerService(db).handle_effect_expired(game_id, effect_id)
             break
 
 
@@ -569,3 +594,5 @@ class PlayerService(BaseService):
         self.db.add(effect)
 
         await self.db.commit()
+        if effect.type == EffectType.TRAPPED:
+            await connection_manager.send_personal({'type': 'delete_zone', 'data': {'zone_id': str(effect.id)}}, effect.player_id)

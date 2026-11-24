@@ -1,0 +1,6 @@
+fastapi==0.135.2
+uvicorn==0.42.0
+SQLAlchemy==2.0.48
+asyncpg==0.31.0
+alembic==1.18.4
+geopy==2.4.1

@@ -18,7 +18,8 @@ async def get_game_endpoint(
     try:
         service = GameService(db)
         game_with_relations = await service.get_game_with_relations(game_id)
-        return to_dict(game_with_relations)
+        from utils.conversions import game_to_dict
+        return game_to_dict(game_with_relations)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -45,9 +46,6 @@ async def get_game_players_info(
                     "role_id": player.role_id,
                     "health": player.health,
                     "is_alive": player.is_alive,
-                    "lat": player.location_lat,
-                    "lng": player.location_lng,
-                    "last_location_update": player.last_location_update.isoformat() if player.last_location_update else None,
                     "is_player_ready": player.is_player_ready
                 }
                 for player in players
@@ -72,7 +70,12 @@ async def get_game_player_info(
         player = await service.get_player_in_game(game_id, player_id)
 
         # JSON ответ
-        return to_dict(player)
+        result = to_dict(player)
+        if result:
+            result.pop("location_lat", None)
+            result.pop("location_lng", None)
+            result.pop("last_location_update", None)
+        return result
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

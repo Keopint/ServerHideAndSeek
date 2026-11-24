@@ -6,8 +6,8 @@ from sqlalchemy.orm import attributes
 from database.models import Game
 
 
-def game_to_dict(game: Game) -> dict:
-    return {
+def game_to_dict(game: Game, viewer_id=None) -> dict:
+    result = {
         "id": str(game.id),
         "game_code": game.game_code,
         "name": game.name,
@@ -27,6 +27,13 @@ def game_to_dict(game: Game) -> dict:
         "roles": [to_dict(r) for r in game.roles],
         "events": [to_dict(e) for e in game.events],
     }
+    # Координаты других игроков не отправляются в снимке состояния.
+    for player in result['players']:
+        if player.get('id') != str(viewer_id):
+            player['location_lat'] = None
+            player['location_lng'] = None
+            player['last_location_update'] = None
+    return result
 
 def to_dict(obj, visited=None, filter_none_in_lists=True, filter_none_in_dicts=False):
     if visited is None:
