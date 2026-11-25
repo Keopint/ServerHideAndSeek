@@ -51,7 +51,7 @@ def test_catch_request_expiration(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_location_stored_and_boundary_damage_only_active(monkeypatch):
-    player = SimpleNamespace(is_alive=True, location_lat=0.0, location_lng=0.0, last_location_update=None)
+    player = SimpleNamespace(is_alive=True, health=100, location_lat=0.0, location_lng=0.0, last_location_update=None)
     game = SimpleNamespace(status=GameStatus.WAITING, safe_zone_center_lat=0.0,
                            safe_zone_center_lng=0.0, safe_zone_radius=100, zone_boundary_damage=2)
     db = SimpleNamespace(get=AsyncMock(return_value=game), add=lambda obj: None, flush=AsyncMock())
@@ -59,6 +59,7 @@ async def test_location_stored_and_boundary_damage_only_active(monkeypatch):
     service.get_player_in_game = AsyncMock(return_value=player)
     service.get_active_player_effects = AsyncMock(return_value=[])
     service.apply_damage = AsyncMock()
+    service.player_died = AsyncMock()
     zone_check = AsyncMock()
     monkeypatch.setattr('services.player.ZoneService', lambda db: SimpleNamespace(check_player_in_zones=zone_check))
     game_id, player_id = uuid4(), uuid4()
@@ -68,8 +69,11 @@ async def test_location_stored_and_boundary_damage_only_active(monkeypatch):
     service.apply_damage.assert_not_awaited()
     game.status = GameStatus.ACTIVE
     await service.update_player_location(game_id, player_id, 1.1, 1.1)
-    service.apply_damage.assert_awaited_once_with(game_id, player_id, 2, ignore_shield=True)
-    zone_check.assert_awaited_once_with(game_id, player_id)
+    from database.models import PlayerDeathCauses
+    service.player_died.assert_awaited_once_with(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER)
+    assert player.health == 0
+    service.apply_damage.assert_not_awaited()
+    zone_check.assert_not_awaited()
 
 
 @pytest.mark.asyncio

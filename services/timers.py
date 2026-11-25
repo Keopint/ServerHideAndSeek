@@ -253,93 +253,30 @@ class TimerManager():
         Периодически (каждую секунду) рассылает координаты всех игроков тем,
         у кого роль поддерживает событие REVEAL.
         """
-        # 1. Определяем ID ролей, у которых есть событие REVEAL
-        stmt_roles_with_reveal = (
-            select(Role.id)
-            .join(role_events, Role.id == role_events.c.role_id)
-            .join(Event, Event.id == role_events.c.event_id)
-            .where(
-                Event.type == EventType.REVEAL
-            )
-        )
+        if end_time is None:
+            return
+        event_id = event.id
 
-        from database.db import get_db
-        async for db in get_db():
-            result = await db.execute(stmt_roles_with_reveal)
-            reveal_role_ids = {row[0] for row in result.all()}  # set of UUID
-
-            if not reveal_role_ids:
-                # Если нет ролей с REVEAL, выходим (но такого не должно быть)
+        async def send_location_step():
+            from database.models import GameStatus
+            async for db in get_db():
+                game = await db.get(Game, game_id)
+                roles = (await db.execute(select(role_events.c.role_id).where(
+                    role_events.c.event_id == event_id))).scalars().all()
+                players = (await db.execute(select(Player).where(Player.game_id == game_id))).scalars().all()
+                active = bool(game and game.status == GameStatus.ACTIVE and datetime.now(timezone.utc) < end_time)
+                locations = {str(p.id): {"location_lat": p.location_lat, "location_lng": p.location_lng}
+                             for p in players if p.is_alive and p.location_lat is not None and p.location_lng is not None}
+                for recipient in players:
+                    if recipient.role_id in roles:
+                        visible = {key: value for key, value in locations.items() if key != str(recipient.id)} if active else {}
+                        await connection_manager.send_personal({'type': 'reveal_players_locations', 'data': visible}, recipient.id)
+                if active:
+                    await self.schedule(game_id, TimerType.EVENT, event_id,
+                        min(end_time, datetime.now(timezone.utc) + timedelta(seconds=1)), send_location_step)
                 return
-            break
 
-        # 2. Получаем всех игроков игры и сразу определяем получателей
-        stmt = select(Player).where(
-            Player.game_id == game_id
-        )
-
-        from database.db import get_db
-        async for db in get_db():
-            players = (await db.execute(stmt)).scalars().all()
-            break
-        recipients = [p for p in players if p.role_id in reveal_role_ids]
-
-        if not recipients:
-            return
-
-        # 3. Длительность события в секундах (целое число)
-        now = datetime.now(timezone.utc)
-        total_seconds = max(0, int((end_time - now).total_seconds()))
-        if total_seconds <= 0:
-            return
-
-        # 4. Функция одного шага (отправка координат)
-        async def send_location_step(step: int):
-            # Получаем свежие координаты всех игроков (один запрос)
-            stmt_players = select(Player).where(Player.game_id == game_id)
-            result_players = await db.execute(stmt_players)
-            current_players = result_players.scalars().all()
-
-            # Формируем словарь координат
-            locations = {
-                str(p.id): {"location_lat": p.location_lat, "location_lng": p.location_lng}
-                for p in current_players
-            }
-
-            # Отправляем каждому получателю
-            for recipient in recipients:
-                filtered_locations = {k: v for k, v in locations.items() if k != str(recipient.id)}
-                await connection_manager.send_personal(
-                    message={
-                        "type": "show_players_locations",
-                        "data": filtered_locations
-                    },
-                    player_id=recipient.id
-                )
-
-            # Планируем следующий шаг, если не последний
-            if step < total_seconds:
-                await timer_manager.schedule(
-                    game_id=game_id,
-                    entity_type=TimerType.EVENT,
-                    entity_id=event.id,
-                    end_time=datetime.now(timezone.utc) + timedelta(seconds=1),
-                    callback=partial(send_location_step, step + 1)
-                )
-
-        # Запускаем первый шаг
-        await send_location_step(1)
-        try:
-            await connection_manager.broadcast_to_game(
-                message={
-                    "type": "remove_location_markers",
-                    "data": {}
-                },
-                game_id=game_id
-            )
-        except Exception as e:
-            logger.exception(f"Error in immediate callback for scan_ability_shedule: {e}")
-        return
+        await send_location_step()
 
     async def timer(
             self,

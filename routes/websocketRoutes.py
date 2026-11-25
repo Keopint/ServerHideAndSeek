@@ -14,11 +14,13 @@ from services.player import PlayerService
 from services.zone import ZoneService
 from utils.conversions import to_dict, game_to_dict
 from services.catch_requests import catch_requests
+from services.faction_chat import handle_faction_chat
 from services.timers import timer_manager
 from services.reconnect_grace import reconnect_grace, expire_disconnected_player
 
 # Типы сообщений, которые клиент может отправлять
 CLIENT_MESSAGE_TYPES = {
+    'chat_send', 'chat_history_request',
     "ping",                 # проверка связи
     "update_location",      # обновление геопозиции
     "use_ability",          # использование способности
@@ -48,7 +50,13 @@ async def handle_client_message(
     data = message.get("data", {})
     player_service = PlayerService(db)
 
-    if msg_type == "ping":
+    if msg_type in ('chat_send', 'chat_history_request'):
+        try:
+            await handle_faction_chat(db, connection_manager, game_id, player_id, msg_type, data)
+        except ValueError as e:
+            await connection_manager.send_personal({'type': 'error', 'message': str(e)}, player_id)
+
+    elif msg_type == "ping":
         # Ответить pong с серверным временем
         await connection_manager.send_personal({
             "type": "pong",

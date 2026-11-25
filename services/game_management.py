@@ -427,6 +427,8 @@ class GameService(BaseService):
 
             await self.db.commit()
             await self.db.refresh(game)
+            from services.faction_chat import faction_chat
+            faction_chat.clear_game(game_id)
         except Exception as e:
             await self.db.rollback()
             raise ValueError(f"Ошибка при окончании игры: {str(e)}")

@@ -16,7 +16,7 @@ from websockets.exceptions import WebSocketException
 
 
 HELP = r"""Команды:
-   .\.venv\Scripts\python.exe tools\test_player.py --code KZHEPJ --name Kira12 --lat 55.6650000004 --lng 37.55
+   .\.venv\Scripts\python.exe tools\test_player.py --code 6WN2X6 --name Kira16 --lat 55.6650000004 --lng 37.551
   roles                показать доступные роли
   role НОМЕР           выбрать роль из списка (в лобби)
   ready / unready      подтвердить / отменить готовность
@@ -26,6 +26,8 @@ HELP = r"""Команды:
   accept / reject      подтвердить / отклонить входящий запрос
   location ШИРОТА ДОЛГОТА  отправить тестовую геопозицию
   ability ТИП [ШИРОТА ДОЛГОТА]  применить способность (например, ability SHIELD)
+  chat ТЕКСТ           отправить сообщение своей фракции
+  chat-history         показать историю чата своей фракции
   help                 показать команды
   quit                 завершить работу
 """
@@ -108,6 +110,12 @@ class TestPlayer:
             print('\n' + data.get('message', 'Ответ получен.'))
         elif kind == 'ability_used':
             print(f"\nСпособность {data.get('ability', '?')}: результат {data.get('result', '?')}")
+        elif kind == 'chat_message':
+            print(f"\n[Чат] {data.get('sender_name', '?')}: {data.get('text', '')}")
+        elif kind == 'chat_history':
+            print('\nИстория чата:')
+            for item in data.get('messages', []):
+                print(f"  {item.get('sender_name', '?')}: {item.get('text', '')}")
         elif kind == 'error':
             print('\nОшибка сервера: ' + str(message.get('message') or data.get('message') or 'неизвестная ошибка'))
         elif kind == 'player_online':
@@ -140,6 +148,16 @@ class TestPlayer:
             self.show_players()
         elif command == 'state' and len(parts) == 1:
             return {'type': 'get_game_state', 'data': {}}
+        elif command == 'chat':
+            message = text.strip().split(maxsplit=1)
+            if len(message) != 2 or not message[1].strip():
+                raise ValueError('Введите сообщение: chat ТЕКСТ')
+            content = message[1].strip()
+            if len(content) > 500:
+                raise ValueError('Сообщение не должно превышать 500 символов')
+            return {'type': 'chat_send', 'data': {'text': content}}
+        elif command == 'chat-history' and len(parts) == 1:
+            return {'type': 'chat_history_request', 'data': {}}
         elif command in ('ready', 'unready') and len(parts) == 1:
             return {'type': 'change_ready_status', 'data': {'status': command == 'ready'}}
         elif command == 'role' and len(parts) == 2:

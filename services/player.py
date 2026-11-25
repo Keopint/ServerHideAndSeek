@@ -137,7 +137,9 @@ class PlayerService(BaseService):
             if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
                 distance = calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng)
                 if distance > game.safe_zone_radius:
-                    await self.apply_damage(game_id, player_id, game.zone_boundary_damage, ignore_shield=True)
+                    player.health = 0
+                    await self.player_died(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER)
+                    return player
             if player.is_alive:
                 zone_service = ZoneService(self.db)
                 await zone_service.check_player_in_zones(game_id, player_id)

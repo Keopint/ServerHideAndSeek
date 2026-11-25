@@ -45,3 +45,19 @@ def test_ability_command():
     assert player.make_command('ability trap 55.75 37.61')['data']['center_lat'] == 55.75
     with pytest.raises(ValueError):
         player.make_command('ability invalid')
+
+
+def test_chat_commands_and_messages(capsys):
+    player = SimulatedPlayer('self')
+    assert player.make_command('chat Привет,  команда!') == {
+        'type': 'chat_send', 'data': {'text': 'Привет,  команда!'}
+    }
+    assert player.make_command('chat-history') == {'type': 'chat_history_request', 'data': {}}
+    for command in ('chat', 'chat   ', 'chat ' + 'x' * 501):
+        with pytest.raises(ValueError):
+            player.make_command(command)
+    player.on_message({'type': 'chat_message', 'data': {'sender_name': 'Лиса', 'text': 'Привет'}})
+    player.on_message({'type': 'chat_history', 'data': {'messages': [{'sender_name': 'Волк', 'text': 'На месте'}]}})
+    output = capsys.readouterr().out
+    assert 'Лиса: Привет' in output
+    assert 'Волк: На месте' in output
