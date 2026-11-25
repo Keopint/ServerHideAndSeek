@@ -4,7 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException, Depends, Request
 from typing import Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
-from services.game_management import GameService
+from services.game_management import GameService, DuplicatePlayerName
 from database.db import get_db
 from fastapi import APIRouter
 from services.websocket_manager import connection_manager
@@ -92,9 +92,11 @@ async def connect_player(
             "game_id": str(game.id),
             "player_id": str(new_player.id),
             "player_name": new_player.name,
-            "game_status": "WAITING",
+            "game_status": game.status.value,
             "ws_url": ws_url
         }
+    except DuplicatePlayerName as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

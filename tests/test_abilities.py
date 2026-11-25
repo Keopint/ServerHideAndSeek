@@ -11,6 +11,26 @@ from services.zone import ZoneService
 
 
 @pytest.mark.asyncio
+async def test_leaving_active_trap_kills_player_without_shield_check():
+    from database.models import EffectType, PlayerDeathCauses
+    game_id, player_id = uuid4(), uuid4()
+    player = SimpleNamespace(is_alive=True, health=100, location_lat=0.0, location_lng=0.0)
+    game = SimpleNamespace(status=GameStatus.ACTIVE, safe_zone_center_lat=0.0,
+                           safe_zone_center_lng=0.0, safe_zone_radius=1000, zone_boundary_damage=1)
+    db = SimpleNamespace(get=AsyncMock(return_value=game), add=lambda obj: None, flush=AsyncMock())
+    service = PlayerService(db)
+    service.get_player_in_game = AsyncMock(return_value=player)
+    service.get_active_player_effects = AsyncMock(return_value=[SimpleNamespace(
+        type=EffectType.TRAPPED, data={'center_lat': 0.0, 'center_lng': 0.0, 'radius': 10})])
+    service.player_died = AsyncMock()
+    service.apply_damage = AsyncMock()
+    await service.update_player_location(game_id, player_id, 0.001, 0.0)
+    assert player.health == 0
+    service.player_died.assert_awaited_once_with(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER)
+    service.apply_damage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ability_not_owned_is_rejected_without_crash():
     game_id, player_id = uuid4(), uuid4()
     player = SimpleNamespace(id=player_id, is_alive=True)

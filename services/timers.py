@@ -418,8 +418,15 @@ class TimerManager():
                         break
                 if chosen_event:
                     from services.event import EventService
-                    await EventService(fresh_db).activate_event(game_id, chosen_event)
+                    active_event = await EventService(fresh_db).activate_event(game_id, chosen_event)
                     await fresh_db.commit()
+                    await connection_manager.broadcast_to_game(game_id, {
+                        'type': 'event_started',
+                        'data': {
+                            'event_type': active_event.event_type.value,
+                            'duration_seconds': max(0, int((active_event.ends_at - datetime.now(timezone.utc)).total_seconds())) if active_event.ends_at else None,
+                        },
+                    })
                 break
 
             # Если есть ещё шаги, планируем следующий через 30 секунд

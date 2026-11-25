@@ -105,9 +105,9 @@ class EventService(BaseService):
                 await timer_manager.reveal_event_schedule(
                     game_id=game_id,
                     event=event,
-                    end_time=ends_at,
-                    db=self.db
+                    end_time=ends_at
                 )
+            return new_game_event
         except Exception:
             await self.db.rollback()
             raise

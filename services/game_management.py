@@ -4,7 +4,7 @@ from sqlalchemy.orm import selectinload
 from database.models import Game, Player, Role, game_roles, ZoneType, Ability, role_abilities, \
     role_events, \
     Event, GameStatus, AbilityType, PlayerAbility, EventType, ActivationFrequencyType, GameZone, VictoryConditionType
-from sqlalchemy import select
+from sqlalchemy import select, func
 from typing import Any, Dict, Type
 from datetime import datetime
 
@@ -17,6 +17,11 @@ from services.ability_rules import forbidden_abilities_for
 from datetime import timezone, timedelta
 
 from services.websocket_manager import connection_manager
+from services.reconnect_grace import reconnect_grace
+
+
+class DuplicatePlayerName(ValueError):
+    """Имя уже занято в этой игре."""
 
 
 class GameService(BaseService):
@@ -439,15 +444,30 @@ class GameService(BaseService):
 
     async def add_player(self, game_code: str, data: Dict[str, Any]):
         try:
-            stmt = select(Game).where(Game.game_code == game_code).options(selectinload(Game.roles))
+            stmt = select(Game).where(Game.game_code == game_code).options(selectinload(Game.roles)).with_for_update()
             result = await self.db.execute(stmt)
             game = result.scalar_one_or_none()
 
             if not game:
                 raise ValueError("Game not found")
 
+            name = data['name'].strip()
+            if not name:
+                raise ValueError("Имя игрока не может быть пустым")
+            matches = (await self.db.execute(select(Player).where(
+                Player.game_id == game.id, func.lower(func.trim(Player.name)) == name.lower()
+            ))).scalars().all()
+            if game.status in (GameStatus.HIDE_TIME, GameStatus.ACTIVE):
+                if (len(matches) == 1 and matches[0].is_alive and
+                    not connection_manager.is_online(matches[0].id) and
+                    reconnect_grace.allows(game.id, matches[0].id)):
+                    return matches[0]
+                raise ValueError("Переподключение недоступно или время ожидания истекло")
             if game.status != GameStatus.WAITING:
-                raise ValueError("Game is already active")
+                raise ValueError("Игра завершена")
+            existing = bool(matches)
+            if existing:
+                raise DuplicatePlayerName("Имя уже занято в этой игре")
 
             if not game.roles:
                 raise ValueError("Game has no roles")
@@ -456,7 +476,7 @@ class GameService(BaseService):
 
             new_player = Player(
                 game_id=game.id,
-                name=data["name"],
+                name=name,
                 role_id=first_role.id,
                 health=first_role.health,
                 is_alive=True,
@@ -471,6 +491,9 @@ class GameService(BaseService):
             await self.db.commit()
             await self.db.refresh(new_player)
             return new_player
+        except DuplicatePlayerName:
+            await self.db.rollback()
+            raise
         except Exception as e:
             await self.db.rollback()
             raise ValueError(f"Ошибка при добавлении нового игрока: {str(e)}")

@@ -36,7 +36,7 @@ def test_join_websocket_address(monkeypatch, public, expected):
             return SimpleNamespace(id=player_id, game_id=game_id, name=data["name"])
 
         async def get_game_with_relations(self, game_id):
-            return SimpleNamespace(id=game_id)
+            return SimpleNamespace(id=game_id, status=SimpleNamespace(value='WAITING'))
 
     async def fake_db():
         yield None

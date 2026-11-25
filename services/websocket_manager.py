@@ -35,10 +35,12 @@ class ConnectionManager:
 
         print(f"[WS] Player {player_key} connected to game {game_key}")
 
-    def disconnect(self, game_id: uuid.UUID, player_id: uuid.UUID) -> None:
+    def disconnect(self, game_id: uuid.UUID, player_id: uuid.UUID, websocket: WebSocket | None = None) -> bool:
         """Удалить соединение игрока."""
         player_key = str(player_id)
         game_key = str(game_id)
+        if websocket is not None and self._game_connections.get(game_key, {}).get(player_key) is not websocket:
+            return False
         if game_key in self._game_connections:
             self._game_connections[game_key].pop(player_key, None)
             self._game_players[game_key].discard(player_key)
@@ -47,6 +49,7 @@ class ConnectionManager:
                 del self._game_players[game_key]
         self._player_game.pop(player_key, None)
         print(f"[WS] Player {player_key} disconnected")
+        return True
 
     async def broadcast_to_game(
             self,
@@ -75,7 +78,7 @@ class ConnectionManager:
             except Exception as e:
                 print(f"[WS] Broadcast failed to {player_key}: {e}")
                 # Опционально: можно удалить проблемное соединение
-                self.disconnect(game_id, uuid.UUID(player_key))
+                self.disconnect(game_id, uuid.UUID(player_key), ws)
 
     async def send_personal(self, message: Any, player_id: uuid.UUID) -> bool:
         """Отправить сообщение конкретному игроку."""
@@ -94,7 +97,7 @@ class ConnectionManager:
             return True
         except Exception as e:
             print(f"[WS] Failed to send to {player_key}: {e}")
-            self.disconnect(uuid.UUID(game_key), player_id)
+            self.disconnect(uuid.UUID(game_key), player_id, websocket)
             return False
 
     def get_connected_players(self, game_id: uuid.UUID) -> Set[str]:

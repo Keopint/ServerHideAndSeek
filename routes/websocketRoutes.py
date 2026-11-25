@@ -4,13 +4,15 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType
+from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType, Player, PlayerEffect, EffectType
+from sqlalchemy import select
 from database.db import get_db
 from services.game_management import GameService
 from services.websocket_manager import connection_manager
 from services.player import PlayerService
 from utils.conversions import to_dict, game_to_dict
 from services.catch_requests import catch_requests
+from services.reconnect_grace import reconnect_grace, expire_disconnected_player
 
 # Типы сообщений, которые клиент может отправлять
 CLIENT_MESSAGE_TYPES = {
@@ -190,7 +192,8 @@ async def handle_client_message(
                 "type": "ability_used",
                 "data": {
                     "ability": ability_type,
-                    "result": result
+                    "result": result,
+                    "passive_effects": await player_service.get_passive_effect_state(player_id)
                 }
             }, player_id)
         except ValueError as e:
@@ -207,6 +210,7 @@ async def handle_client_message(
             player_state = await player_service.get_player_in_game(game_id, player_id)
             player_data = to_dict(player_state)
             player_data['ability_state'] = await player_service.get_ability_state(player_id)
+            player_data['passive_effects'] = await player_service.get_passive_effect_state(player_id)
             await connection_manager.send_personal({
                 "type": "game_state",
                 "data": {
@@ -214,6 +218,24 @@ async def handle_client_message(
                     "game_data": game_to_dict(game_with_relation, player_id)
                 }
             }, player_id)
+            now = datetime.now(timezone.utc)
+            traps = (await db.execute(select(PlayerEffect, Player)
+                     .join(Player, PlayerEffect.player_id == Player.id)
+                     .where(Player.game_id == game_id, PlayerEffect.type == EffectType.TRAPPED,
+                            PlayerEffect.is_active.is_(True), PlayerEffect.ends_at > now))).all()
+            for effect, victim in traps:
+                if victim.id != player_id and (not player_state.role_ref or
+                    player_state.role_ref.victory_condition != VictoryConditionType.SEEKER):
+                    continue
+                trap = effect.data or {}
+                if not all(key in trap for key in ('center_lat', 'center_lng', 'radius', 'zone_type')):
+                    continue
+                await connection_manager.send_personal({'type': 'trap_activated', 'data': {
+                    'effect_id': str(effect.id), 'zone_type': trap['zone_type'],
+                    'center_lat': trap['center_lat'], 'center_lng': trap['center_lng'],
+                    'radius': trap['radius'], 'remaining_seconds': max(0, int((effect.ends_at - now).total_seconds())),
+                    'player_name': victim.name, 'is_victim': victim.id == player_id, 'notify': False,
+                }}, player_id)
         except Exception as e:
             await connection_manager.send_personal({
                 "type": "error",
@@ -303,7 +325,17 @@ def register_websocket_endpoint(app):
                     await websocket.close(code=4001, reason="Player not in game")
                     return
 
+                if not player.is_alive:
+                    await websocket.close(code=4003, reason="Player is no longer active")
+                    return
+
+                if (reconnect_grace.has_deadline(game_id, player_id) and
+                        not reconnect_grace.allows(game_id, player_id)):
+                    await websocket.close(code=4003, reason="Reconnect deadline expired")
+                    return
+
                 await connection_manager.connect(game_id, player_id, websocket)
+                reconnect_grace.cancel(game_id, player_id)
 
                 # Оповестить других
                 await connection_manager.broadcast_to_game(
@@ -366,12 +398,16 @@ def register_websocket_endpoint(app):
                     pass
             finally:
                 # Единоразовая очистка
-                connection_manager.disconnect(game_id, player_id)
+                disconnected = connection_manager.disconnect(game_id, player_id, websocket)
                 try:
                     player_service = PlayerService(db)
                     player = await player_service.get_player_in_game(game_id, player_id)
-                    player.is_online = False
-                    await connection_manager.broadcast_to_game(
+                    if player and disconnected:
+                        player.is_online = False
+                        game = await db.get(Game, game_id, populate_existing=True)
+                        if player.is_alive and game and game.status in (GameStatus.HIDE_TIME, GameStatus.ACTIVE):
+                            reconnect_grace.start(game_id, player_id, datetime.now(timezone.utc), expire_disconnected_player)
+                        await connection_manager.broadcast_to_game(
                         game_id,
                         {
                             "type": "player_offline",
@@ -381,7 +417,7 @@ def register_websocket_endpoint(app):
                             }
                         },
                         exclude_player=player_id
-                    )
+                        )
                 except Exception as e:
                     print(f"[WS] Failed to send offline: {e}")
                 await db.close()

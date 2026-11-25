@@ -82,6 +82,15 @@ class PlayerService(BaseService):
         result = await self.db.execute(stmt)
         return result.scalars().all()
 
+    async def get_passive_effect_state(self, player_id: uuid.UUID):
+        now = datetime.now(timezone.utc)
+        return [
+            {'id': str(effect.id), 'type': effect.type.value,
+             'remaining_ms': max(0, int((effect.ends_at - now).total_seconds() * 1000))}
+            for effect in await self.get_active_player_effects(player_id)
+            if effect.type in (EffectType.SHIELD, EffectType.INTEL, EffectType.SCAN)
+        ]
+
     async def update_player_location(
         self,
         game_id: uuid.UUID,
@@ -122,9 +131,9 @@ class PlayerService(BaseService):
                 if (effect.type == EffectType.TRAPPED and
                     all(key in trap for key in ('center_lat', 'center_lng', 'radius')) and
                     calculate_distance(lat, lng, trap['center_lat'], trap['center_lng']) > trap['radius']):
-                    await connection_manager.send_personal({
-                        'type': 'error', 'message': 'Вы вышли из ловушки. Вернитесь к месту срабатывания до окончания действия.'
-                    }, player_id)
+                    player.health = 0
+                    await self.player_died(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER)
+                    return player
             if game.safe_zone_center_lat is not None and game.safe_zone_center_lng is not None and game.safe_zone_radius is not None:
                 distance = calculate_distance(lat, lng, game.safe_zone_center_lat, game.safe_zone_center_lng)
                 if distance > game.safe_zone_radius:
@@ -397,6 +406,8 @@ class PlayerService(BaseService):
         if shield:
             shield.is_active = False
             self.db.add(shield)
+            await connection_manager.send_personal({'type': 'passive_effect_ended',
+                                                     'data': {'id': str(shield.id)}}, player_id)
 
     async def use_ability(
             self,
@@ -612,4 +623,4 @@ class PlayerService(BaseService):
 
         await self.db.commit()
         if effect.type == EffectType.TRAPPED:
-            await connection_manager.send_personal({'type': 'delete_zone', 'data': {'zone_id': str(effect.id)}}, effect.player_id)
+            await connection_manager.broadcast_to_game(game_id, {'type': 'delete_zone', 'data': {'zone_id': str(effect.id)}})

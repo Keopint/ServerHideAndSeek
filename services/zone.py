@@ -216,15 +216,22 @@ class ZoneService(BaseService):
             trap_duration = max(1, int((zone.zone_data or {}).get("trap_duration_seconds", 60)))
             effect = await player_service.apply_effect(player.game_id, player.id, EffectType.TRAPPED, trap_duration)
             effect.data = {'zone_id': str(zone.id), 'center_lat': zone.center_lat,
-                           'center_lng': zone.center_lng, 'radius': zone.radius}
+                           'center_lng': zone.center_lng, 'radius': zone.radius,
+                           'zone_type': zone.type.value}
             zone.is_active = False
             self.db.add(zone)
             await connection_manager.broadcast_to_game(player.game_id, {'type': 'delete_zone', 'data': {'zone_id': str(zone.id)}})
-            await connection_manager.send_personal({'type': 'error', 'message': f'Вы попали в ловушку. Оставайтесь рядом {trap_duration} сек.'}, player.id)
+            trap_data = {'effect_id': str(effect.id), 'zone_type': zone.type.value,
+                         'center_lat': zone.center_lat, 'center_lng': zone.center_lng,
+                         'radius': zone.radius, 'remaining_seconds': trap_duration,
+                         'player_name': player.name}
+            await connection_manager.send_personal({'type': 'trap_activated',
+                'data': {**trap_data, 'is_victim': True}}, player.id)
             seekers = (await self.db.execute(select(Player).join(Role, Player.role_id == Role.id)
                         .where(Player.game_id == player.game_id, Role.victory_condition == VictoryConditionType.SEEKER))).scalars().all()
             for seeker in seekers:
-                await connection_manager.send_personal({'type': 'error', 'message': f'Игрок {player.name} попал в ловушку.'}, seeker.id)
+                await connection_manager.send_personal({'type': 'trap_activated',
+                    'data': {**trap_data, 'is_victim': False}}, seeker.id)
 
         # Защитные зоны не должны наносить урон при исчезновении.
 
