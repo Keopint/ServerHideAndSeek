@@ -436,7 +436,7 @@ class PlayerService(BaseService):
                     raise ValueError("Другая способность обнаружения уже действует")
             if ability_enum == AbilityType.SHIELD and await self.has_active_shield(player_id):
                 raise ValueError("Щит уже активен")
-            if ability_enum in (AbilityType.SAFE_HOUSE, AbilityType.SAFE_MANSION, AbilityType.SNARE):
+            if ability_enum in (AbilityType.SAFE_HOUSE, AbilityType.SAFE_MANSION):
                 lat, lng = player.location_lat, player.location_lng
             if ability_enum in (AbilityType.TRAP, AbilityType.SNARE, AbilityType.PERSONAL_BOMB, AbilityType.SAFE_HOUSE, AbilityType.SAFE_MANSION):
                 if (isinstance(lat, bool) or isinstance(lng, bool) or

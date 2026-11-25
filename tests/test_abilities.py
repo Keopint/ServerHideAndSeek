@@ -73,6 +73,65 @@ async def test_snapshot_contains_remaining_uses_and_cooldown():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'ability_type, zone_type',
+    [(AbilityType.TRAP, ZoneType.TRAP), (AbilityType.SNARE, ZoneType.SNARE)],
+)
+async def test_trap_and_snare_are_placed_at_selected_point(monkeypatch, ability_type, zone_type):
+    """Ловушка и капкан ставятся в выбранную на карте точку, а не под игрока."""
+    game_id, player_id, ability_id = uuid4(), uuid4(), uuid4()
+    player = SimpleNamespace(id=player_id, is_alive=True, location_lat=1.0, location_lng=2.0)
+    owned = SimpleNamespace(ability_id=ability_id, number_uses_left=2)
+    ability = SimpleNamespace(
+        id=ability_id,
+        duration_seconds=60,
+        recharge_time=0,
+        data={'radius': 10, 'trap_duration_seconds': 60},
+    )
+    game = SimpleNamespace(
+        status=GameStatus.ACTIVE,
+        safe_zone_center_lat=55.5,
+        safe_zone_center_lng=37.5,
+        safe_zone_radius=1000,
+    )
+
+    async def get(model, ident, **kwargs):
+        if model is Game:
+            return game
+        if model is Ability:
+            return ability
+        return None
+
+    db = SimpleNamespace(
+        get=AsyncMock(side_effect=get),
+        execute=AsyncMock(side_effect=[
+            SimpleNamespace(scalar_one_or_none=lambda: owned),
+            SimpleNamespace(scalar_one_or_none=lambda: None),
+        ]),
+        add=lambda obj: None,
+        rollback=AsyncMock(),
+        commit=AsyncMock(),
+    )
+    service = PlayerService(db)
+    service.get_player_in_game = AsyncMock(return_value=player)
+
+    calls = []
+
+    async def fake_create_zone(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(ZoneService, 'create_zone', fake_create_zone)
+
+    await service.use_ability(game_id, player_id, ability_type.value, 55.5, 37.5)
+
+    assert calls, 'зона должна быть создана'
+    # args: (self, game_id, zone_type, center_lat, center_lng, ...)
+    assert calls[0][2] == zone_type
+    assert (calls[0][3], calls[0][4]) == (55.5, 37.5)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('creator_side', [VictoryConditionType.SEEKER, VictoryConditionType.HIDER])
 async def test_trap_location_sent_only_to_creators_side(monkeypatch, creator_side):
     from services import zone as zone_module
