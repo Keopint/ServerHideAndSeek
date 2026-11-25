@@ -9,6 +9,7 @@ from sqlalchemy import select, or_
 from datetime import datetime, timezone, timedelta
 
 from services.base import BaseService
+from services.ability_rules import forbidden_abilities_for
 from services.timers import timer_manager, TimerType
 from utils.conversions import to_dict
 from utils.geo import is_point_in_circle
@@ -97,9 +98,13 @@ class ZoneService(BaseService):
                 continue
             visible_type = (ZoneType.DANGER if zone_type in (ZoneType.SAFE_HOUSE, ZoneType.SAFE_MANSION)
                             and side == VictoryConditionType.SEEKER else zone_type)
+            remaining_seconds = (int((zone.ends_at - now).total_seconds())
+                                 if zone.ends_at is not None else None)
             await connection_manager.send_personal({'type': 'create_zone', 'data': {
                 'zone_id': str(zone.id), 'zone_type': visible_type.value,
-                'center_lat': center_lat, 'center_lng': center_lng, 'radius': radius
+                'center_lat': center_lat, 'center_lng': center_lng, 'radius': radius,
+                # None означает, что зона не привязана ко времени и таймер не нужен.
+                'remaining_seconds': remaining_seconds
             }}, recipient.id)
         print(f"[DEBUG] zone.ends_at: {zone.ends_at}")
         if zone.ends_at is not None:
@@ -163,9 +168,12 @@ class ZoneService(BaseService):
             # Отмечаем зону как забранную, чтобы другие игроки не получили способность
             zone.zone_data = {**zone.zone_data, "is_claimed": True}
             zone.is_active = False
-            # Выбираем случайную сильную способность
+            # Выбираем случайную сильную способность, доступную стороне игрока.
             strong_ability_types = [AbilityType.SAFE_MANSION, AbilityType.SCAN, AbilityType.TRAP]
-            chosen_type = random.choice(strong_ability_types)
+            role = await self.db.get(Role, player.role_id)
+            forbidden = forbidden_abilities_for(role.victory_condition) if role else set()
+            allowed_types = [ability for ability in strong_ability_types if ability not in forbidden]
+            chosen_type = random.choice(allowed_types or [AbilityType.SCAN])
             # Ищем соответствующую способность в БД (по ability_type)
             # Если такая способность уже есть у игрока, увеличиваем её запас,
             # а не создаём вторую запись того же типа.

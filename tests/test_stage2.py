@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
-from database.models import GameStatus, VictoryConditionType
+from database.models import Game, GameStatus, Role, VictoryConditionType
 from services.catch_requests import CatchRequests
 from services.player import PlayerService
 from routes import websocketRoutes
@@ -172,3 +172,47 @@ async def test_start_rejects_two_players_same_team(monkeypatch):
     ))
     with pytest.raises(ValueError, match='ищущий'):
         await GameService(db).start_game(uuid4())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'seeker_alive, hider_alive, should_finish',
+    [
+        (False, True, True),   # последний охотник погиб — игра должна завершиться
+        (True, False, True),
+        (True, True, False),
+        (False, False, True),
+    ],
+)
+async def test_game_finishes_when_one_side_has_no_alive_players(
+        monkeypatch, seeker_alive, hider_alive, should_finish):
+    game_id = uuid4()
+    seeker_role_id, hider_role_id = uuid4(), uuid4()
+    players = [
+        SimpleNamespace(id=uuid4(), is_alive=seeker_alive, role_id=seeker_role_id),
+        SimpleNamespace(id=uuid4(), is_alive=hider_alive, role_id=hider_role_id),
+    ]
+    roles = {
+        seeker_role_id: VictoryConditionType.SEEKER,
+        hider_role_id: VictoryConditionType.HIDER,
+    }
+
+    async def get(model, ident, **kwargs):
+        if model is Game:
+            return SimpleNamespace(status=GameStatus.ACTIVE)
+        if model is Role:
+            return SimpleNamespace(victory_condition=roles[ident])
+        return None
+
+    db = SimpleNamespace(get=AsyncMock(side_effect=get))
+    service = PlayerService(db)
+    service.get_players_in_game = AsyncMock(return_value=players)
+    finish_game = AsyncMock()
+    monkeypatch.setattr(GameService, 'finish_game', finish_game)
+
+    await service._finish_game_if_side_eliminated(game_id)
+
+    if should_finish:
+        finish_game.assert_awaited_once_with(game_id=game_id)
+    else:
+        finish_game.assert_not_awaited()

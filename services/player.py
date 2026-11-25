@@ -9,6 +9,7 @@ from database.models import (Game, Player, GameStatus, PlayerEffect,
 from sqlalchemy import select, delete
 from datetime import datetime, timezone, timedelta
 from services.zone import ZoneService
+from services.ability_rules import forbidden_abilities_for
 from services.base import BaseService
 from services.timers import TimerType, timer_manager
 from utils.conversions import to_dict
@@ -345,19 +346,31 @@ class PlayerService(BaseService):
 
         connection_manager.disconnect(game_id, player_id)
 
-        player_service = PlayerService(self.db)
-        players = await player_service.get_players_in_game(game_id)
+        await self._finish_game_if_side_eliminated(game_id)
 
-        cnt_hiders = 0
-        for player in players:
-            role = await self.db.get(Role, player.role_id)
-            if player.is_alive and role.victory_condition == VictoryConditionType.HIDER:
-                cnt_hiders += 1
-        if cnt_hiders == 0:
-            from services.game_management import GameService
-            game_service = GameService(self.db)
-            await game_service.finish_game(game_id=game_id)
+    async def _finish_game_if_side_eliminated(self, game_id: uuid.UUID) -> None:
+        """Завершает игру, если не осталось живых игроков одной из сторон."""
+        game = await self.db.get(Game, game_id)
+        if not game or game.status != GameStatus.ACTIVE:
             return
+
+        players = await self.get_players_in_game(game_id)
+        alive_hiders = 0
+        alive_seekers = 0
+        for player in players:
+            if not player.is_alive:
+                continue
+            role = await self.db.get(Role, player.role_id)
+            if not role:
+                continue
+            if role.victory_condition == VictoryConditionType.HIDER:
+                alive_hiders += 1
+            elif role.victory_condition == VictoryConditionType.SEEKER:
+                alive_seekers += 1
+
+        if alive_hiders == 0 or alive_seekers == 0:
+            from services.game_management import GameService
+            await GameService(self.db).finish_game(game_id=game_id)
 
     async def has_active_shield(self, player_id: uuid.UUID) -> bool:
         now = datetime.now(timezone.utc)
@@ -405,6 +418,10 @@ class PlayerService(BaseService):
                 ability_enum = AbilityType(ability_type)
             except ValueError:
                 raise ValueError(f"Unknown ability type: {ability_type}")
+
+            role = getattr(player, 'role_ref', None)
+            if role is not None and ability_enum in forbidden_abilities_for(role.victory_condition):
+                raise ValueError("Эта способность недоступна вашей роли")
 
             # 3. Ищем PlayerAbility, связанную с Ability, и фильтруем по игроку и типу способности
             stmt = (

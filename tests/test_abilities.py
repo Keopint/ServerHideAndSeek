@@ -26,6 +26,34 @@ async def test_ability_not_owned_is_rejected_without_crash():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'victory_condition, ability_type',
+    [
+        (VictoryConditionType.SEEKER, 'SAFE_HOUSE'),
+        (VictoryConditionType.SEEKER, 'SAFE_MANSION'),
+        (VictoryConditionType.HIDER, 'TRAP'),
+        (VictoryConditionType.HIDER, 'SNARE'),
+    ],
+)
+async def test_ability_is_rejected_for_wrong_side(victory_condition, ability_type):
+    game_id, player_id = uuid4(), uuid4()
+    player = SimpleNamespace(
+        id=player_id,
+        is_alive=True,
+        role_ref=SimpleNamespace(victory_condition=victory_condition),
+    )
+    db = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(status=GameStatus.ACTIVE)),
+        execute=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+    service = PlayerService(db)
+    service.get_player_in_game = AsyncMock(return_value=player)
+    with pytest.raises(ValueError, match='недоступна вашей роли'):
+        await service.use_ability(game_id, player_id, ability_type)
+
+
+@pytest.mark.asyncio
 async def test_cooldown_rejects_without_spending_a_charge():
     game_id, player_id, ability_id = uuid4(), uuid4(), uuid4()
     player = SimpleNamespace(id=player_id, is_alive=True)
@@ -151,3 +179,28 @@ async def test_trap_location_sent_only_to_creators_side(monkeypatch, creator_sid
     await ZoneService(db).create_zone(game_id, ZoneType.TRAP, 55.0, 37.0, None, 10, creator_id=creator_id)
     assert {player_id for _, player_id in sent} == {creator_id, teammate_id}
     assert all(message['data']['zone_type'] == 'TRAP' for message, _ in sent)
+    assert all(message['data']['remaining_seconds'] is None for message, _ in sent)
+
+
+@pytest.mark.asyncio
+async def test_create_zone_sends_remaining_seconds(monkeypatch):
+    from services import zone as zone_module
+    game_id, player_id = uuid4(), uuid4()
+    db = SimpleNamespace(
+        add=lambda obj: None,
+        flush=AsyncMock(),
+        execute=AsyncMock(return_value=SimpleNamespace(
+            all=lambda: [(SimpleNamespace(id=player_id), VictoryConditionType.HIDER)]
+        )),
+    )
+    sent = []
+
+    async def send(message, recipient_id):
+        sent.append((message, recipient_id))
+
+    monkeypatch.setattr(zone_module.connection_manager, 'send_personal', send)
+    monkeypatch.setattr(zone_module.timer_manager, 'schedule', AsyncMock())
+
+    await ZoneService(db).create_zone(game_id, ZoneType.DANGER, 55.0, 37.0, 30, 10)
+    assert len(sent) == 1
+    assert sent[0][0]['data']['remaining_seconds'] == 30

@@ -13,6 +13,7 @@ from utils.generator import generate_game_join_code
 from services.base import BaseService
 from services.player import PlayerService
 from services.zone import ZoneService
+from services.ability_rules import forbidden_abilities_for
 from datetime import timezone, timedelta
 
 from services.websocket_manager import connection_manager
@@ -172,6 +173,11 @@ class GameService(BaseService):
                         ability_enum = AbilityType(ability_type_clean)
                     except ValueError:
                         raise ValueError(f"Неизвестный тип способности: {ability_type_str}")
+
+                    if ability_enum in forbidden_abilities_for(role.victory_condition):
+                        raise ValueError(
+                            f"Способность {ability_enum.value} недоступна роли '{role_name}'"
+                        )
 
                     ability = Ability(
                         ability_type=ability_enum,

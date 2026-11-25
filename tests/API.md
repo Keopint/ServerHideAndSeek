@@ -382,10 +382,13 @@
         "zone_type": "DANGER",
         "center_lat": 20.2443,
         "center_lng": 33.2453,
-        "radius": 11.323
+        "radius": 11.323,
+        "remaining_seconds": 30
     }
 }
 ```
+
+`remaining_seconds` — остаток времени до срабатывания зоны; `null`, если зона не привязана ко времени (таймер внутри такой зоны не показывается).
 
 **Удалить зону:**
 ```json
@@ -472,6 +475,8 @@
 | `SNARE`         | Капкан                  | `{"radius": 10.0, "trap_duration_seconds": 600}` |
 | `SAFE_HOUSE`    | Я в домике              | `{"radius": 20.0}`                               |
 | `SAFE_MANSION`  | Я в особняке            | `{"radius": 30.0}`                               |
+
+Ограничения по сторонам: `SAFE_HOUSE` и `SAFE_MANSION` доступны только прячущимся (`HIDER`), `TRAP` и `SNARE` — только охотникам (`SEEKER`).
 
 **Общие поля способности:**
 - `duration_seconds` – длительность действия (сек)
