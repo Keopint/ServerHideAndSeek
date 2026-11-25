@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from functools import partial
 import random
+import math
 from typing import Callable, Awaitable, Dict, Union
 import uuid
 from enum import Enum
@@ -36,6 +37,19 @@ class TimerManager():
         # Ключ: f"{game_id}:{entity_type}:{entity_id}"
         self._tasks: Dict[str, asyncio.Task] = {}
         self._cleanup_lock = asyncio.Lock()
+        self._phase_deadlines: Dict[uuid.UUID, datetime] = {}
+
+    def set_phase_deadline(self, game_id: uuid.UUID, deadline: datetime) -> None:
+        self._phase_deadlines[game_id] = deadline
+
+    def phase_remaining_seconds(self, game_id: uuid.UUID) -> int | None:
+        deadline = self._phase_deadlines.get(game_id)
+        if deadline is None:
+            return None
+        return max(0, math.ceil((deadline - datetime.now(timezone.utc)).total_seconds()))
+
+    def clear_phase_deadline(self, game_id: uuid.UUID) -> None:
+        self._phase_deadlines.pop(game_id, None)
 
     async def schedule(
         self,

@@ -15,6 +15,19 @@ from services.timers import TimerManager
 from services.game_management import GameService
 
 
+@pytest.mark.asyncio
+async def test_voluntary_exit_eliminates_current_player(monkeypatch):
+    game_id, player_id = uuid4(), uuid4()
+    player = SimpleNamespace(is_alive=True)
+    game = SimpleNamespace(status=GameStatus.HIDE_TIME)
+    service = SimpleNamespace(get_player_in_game=AsyncMock(return_value=player), player_died=AsyncMock())
+    monkeypatch.setattr(websocketRoutes, 'PlayerService', lambda db: service)
+    db = SimpleNamespace(get=AsyncMock(return_value=game))
+    await websocketRoutes.handle_client_message(game_id, player_id, {'type': 'get_out_of_the_game', 'data': {}}, db)
+    from database.models import PlayerDeathCauses
+    service.player_died.assert_awaited_once_with(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER, voluntary_quit=True)
+
+
 def test_catch_request_only_target_can_respond_and_only_once():
     requests = CatchRequests()
     game, hunter, target = uuid4(), uuid4(), uuid4()
@@ -129,6 +142,18 @@ async def test_distinct_game_and_event_timers_do_not_cancel_each_other():
     await manager.timer(uuid4_id, now + timedelta(milliseconds=15), lambda: callback('event'), timer_name='EVENT_GENERATION')
     await asyncio.sleep(0.1)
     assert set(done) == {'game', 'event'}
+
+
+def test_phase_remaining_is_based_on_deadline_and_clamped():
+    manager = TimerManager()
+    game_id = uuid4()
+    assert manager.phase_remaining_seconds(game_id) is None
+    manager.set_phase_deadline(game_id, datetime.now(timezone.utc) + timedelta(seconds=25))
+    assert 24 <= manager.phase_remaining_seconds(game_id) <= 25
+    manager.set_phase_deadline(game_id, datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert manager.phase_remaining_seconds(game_id) == 0
+    manager.clear_phase_deadline(game_id)
+    assert manager.phase_remaining_seconds(game_id) is None
 
 
 def test_other_players_coordinates_are_not_in_state(monkeypatch):

@@ -312,7 +312,7 @@ class PlayerService(BaseService):
             await self.db.rollback()
             raise
 
-    async def player_died(self, game_id: uuid.UUID, player_id: uuid.UUID, death_cause: PlayerDeathCauses, hunter_player_id: uuid.UUID = None):
+    async def player_died(self, game_id: uuid.UUID, player_id: uuid.UUID, death_cause: PlayerDeathCauses, hunter_player_id: uuid.UUID = None, voluntary_quit: bool = False):
         # 1. Получаем игрока из БД
         player = await self.db.get(Player, player_id)
         if not player or not player.is_alive:
@@ -325,7 +325,7 @@ class PlayerService(BaseService):
         # 3. Отправляем личное сообщение умершему игроку (он закроет сокет)
         await connection_manager.send_personal(
             {
-                "type": "you_died",
+                "type": "quit_confirmed" if voluntary_quit else "you_died",
                 "data": {
                     "reason": str(death_cause.value),
                     "hunter_player_id": str(hunter_player_id) if hunter_player_id else None,
@@ -360,7 +360,7 @@ class PlayerService(BaseService):
     async def _finish_game_if_side_eliminated(self, game_id: uuid.UUID) -> None:
         """Завершает игру, если не осталось живых игроков одной из сторон."""
         game = await self.db.get(Game, game_id)
-        if not game or game.status != GameStatus.ACTIVE:
+        if not game or game.status not in (GameStatus.HIDE_TIME, GameStatus.ACTIVE):
             return
 
         players = await self.get_players_in_game(game_id)

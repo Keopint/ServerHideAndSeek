@@ -37,7 +37,7 @@ class GameService(BaseService):
             zone_shrink_interval = data.get("zone_shrink_interval", 120)
             game_duration = data.get("game_duration", 1800)
             zone_boundary_damage = data.get("zone_boundary_damage", 1)
-            time_to_hide = data.get("time_to_hide", 300)
+            time_to_hide = data.get("time_to_hide", 10)
 
             # 2. Информация о хосте
             host_data = data["host_player"]
@@ -277,6 +277,8 @@ class GameService(BaseService):
 
             now = datetime.now(timezone.utc)
             duration_seconds = game.time_to_hide
+            phase_deadline = now + timedelta(seconds=duration_seconds)
+            timer_manager.set_phase_deadline(game_id, phase_deadline)
 
             await connection_manager.broadcast_to_game(
                 game_id=game_id,
@@ -290,7 +292,7 @@ class GameService(BaseService):
 
             await timer_manager.timer(
                 game_id=game_id,
-                end_time=now + timedelta(seconds=duration_seconds),
+                end_time=phase_deadline,
                 callback= lambda: self._on_hide_to_time_finished_callback(game_id)
             )
             return game
@@ -300,16 +302,14 @@ class GameService(BaseService):
 
     async def _on_hide_to_time_finished_callback(self, game_id: uuid.UUID):
         print("[HIDE_TIMER CALLBACK]")
-        await connection_manager.broadcast_to_game(
-            game_id=game_id,
-            message={
-                "type": "timer_to_hide_finished",
-                "data": {}
-            }
-        )
         from database.db import get_db
         async for db in get_db():
-            await GameService(db).start_active_game(game_id)
+            game = await db.get(Game, game_id)
+            if game and game.status == GameStatus.HIDE_TIME:
+                await connection_manager.broadcast_to_game(game_id=game_id, message={
+                    "type": "timer_to_hide_finished", "data": {}
+                })
+                await GameService(db).start_active_game(game_id)
             break
 
     async def start_active_game(self, game_id: uuid.UUID):
@@ -320,6 +320,8 @@ class GameService(BaseService):
             await self.db.refresh(game)
             now = datetime.now(timezone.utc)
             duration_seconds = game.game_duration
+            phase_deadline = now + timedelta(seconds=duration_seconds)
+            timer_manager.set_phase_deadline(game_id, phase_deadline)
             await connection_manager.broadcast_to_game(
                 message={
                     "type": "start_timer_for_game",
@@ -336,7 +338,7 @@ class GameService(BaseService):
                 break
             await timer_manager.timer(
                 game_id=game_id,
-                end_time=now + timedelta(seconds=duration_seconds),
+                end_time=phase_deadline,
                 callback= lambda: self._on_game_timer_finished_callback(game_id)
             )
             stmt = (
@@ -385,6 +387,7 @@ class GameService(BaseService):
             if not game or game.status == GameStatus.FINISHED:
                 return
             game.status = GameStatus.FINISHED
+            timer_manager.clear_phase_deadline(game_id)
 
             player_service = PlayerService(self.db)
             players = await player_service.get_players_in_game(game_id)
@@ -459,8 +462,8 @@ class GameService(BaseService):
             ))).scalars().all()
             if game.status in (GameStatus.HIDE_TIME, GameStatus.ACTIVE):
                 if (len(matches) == 1 and matches[0].is_alive and
-                    not connection_manager.is_online(matches[0].id) and
-                    reconnect_grace.allows(game.id, matches[0].id)):
+                    (connection_manager.is_online(matches[0].id) or
+                     reconnect_grace.allows(game.id, matches[0].id))):
                     return matches[0]
                 raise ValueError("Переподключение недоступно или время ожидания истекло")
             if game.status != GameStatus.WAITING:

@@ -29,9 +29,16 @@ class ConnectionManager:
             self._game_connections[game_key] = {}
             self._game_players[game_key] = set()
 
+        previous = self._game_connections[game_key].get(player_key)
         self._game_connections[game_key][player_key] = websocket
         self._player_game[player_key] = game_key
         self._game_players[game_key].add(player_key)
+
+        if previous is not None and previous is not websocket:
+            try:
+                await previous.close(code=4001, reason="Соединение заменено")
+            except Exception:
+                pass
 
         print(f"[WS] Player {player_key} connected to game {game_key}")
 
@@ -50,6 +57,13 @@ class ConnectionManager:
         self._player_game.pop(player_key, None)
         print(f"[WS] Player {player_key} disconnected")
         return True
+
+    def _disconnect_failed(self, game_id: uuid.UUID, player_id: uuid.UUID, websocket: WebSocket) -> None:
+        if self.disconnect(game_id, player_id, websocket):
+            # Отправка может обнаружить обрыв раньше receive_json/finally.
+            from datetime import datetime, timezone
+            from services.reconnect_grace import reconnect_grace, expire_disconnected_player
+            reconnect_grace.start(game_id, player_id, datetime.now(timezone.utc), expire_disconnected_player)
 
     async def broadcast_to_game(
             self,
@@ -78,7 +92,7 @@ class ConnectionManager:
             except Exception as e:
                 print(f"[WS] Broadcast failed to {player_key}: {e}")
                 # Опционально: можно удалить проблемное соединение
-                self.disconnect(game_id, uuid.UUID(player_key), ws)
+                self._disconnect_failed(game_id, uuid.UUID(player_key), ws)
 
     async def send_personal(self, message: Any, player_id: uuid.UUID) -> bool:
         """Отправить сообщение конкретному игроку."""
@@ -97,7 +111,7 @@ class ConnectionManager:
             return True
         except Exception as e:
             print(f"[WS] Failed to send to {player_key}: {e}")
-            self.disconnect(uuid.UUID(game_key), player_id, websocket)
+            self._disconnect_failed(uuid.UUID(game_key), player_id, websocket)
             return False
 
     def get_connected_players(self, game_id: uuid.UUID) -> Set[str]:

@@ -1,17 +1,20 @@
 # websocketRoutes.py
 import json
+import math
 import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType, Player, PlayerEffect, EffectType
+from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType, Player, PlayerEffect, EffectType, ZoneType, Role, GameEvent, EventType
 from sqlalchemy import select
 from database.db import get_db
 from services.game_management import GameService
 from services.websocket_manager import connection_manager
 from services.player import PlayerService
+from services.zone import ZoneService
 from utils.conversions import to_dict, game_to_dict
 from services.catch_requests import catch_requests
+from services.timers import timer_manager
 from services.reconnect_grace import reconnect_grace, expire_disconnected_player
 
 # Типы сообщений, которые клиент может отправлять
@@ -142,6 +145,14 @@ async def handle_client_message(
                 "message": str(e)
             }, player_id)
 
+    elif msg_type == "get_out_of_the_game":
+        player = await player_service.get_player_in_game(game_id, player_id)
+        game = await db.get(Game, game_id, populate_existing=True)
+        if not player or not player.is_alive or not game or game.status not in (GameStatus.HIDE_TIME, GameStatus.ACTIVE):
+            await connection_manager.send_personal({'type': 'error', 'message': 'Не удалось выйти: игрок или игра уже не активны'}, player_id)
+            return
+        await player_service.player_died(game_id, player_id, PlayerDeathCauses.HP_ARE_OVER, voluntary_quit=True)
+
     elif msg_type == "update_location":
         lat = data.get("lat")
         lng = data.get("lng")
@@ -211,14 +222,40 @@ async def handle_client_message(
             player_data = to_dict(player_state)
             player_data['ability_state'] = await player_service.get_ability_state(player_id)
             player_data['passive_effects'] = await player_service.get_passive_effect_state(player_id)
+            game_data = game_to_dict(game_with_relation, player_id)
+            game_data['phase_remaining_seconds'] = timer_manager.phase_remaining_seconds(game_id)
             await connection_manager.send_personal({
                 "type": "game_state",
                 "data": {
                     "player_data": player_data,
-                    "game_data": game_to_dict(game_with_relation, player_id)
+                    "game_data": game_data
                 }
             }, player_id)
             now = datetime.now(timezone.utc)
+            reveal_end = (await db.execute(select(GameEvent.ends_at).where(
+                GameEvent.game_id == game_id, GameEvent.event_type == EventType.REVEAL,
+                GameEvent.ends_at > now).order_by(GameEvent.ends_at.desc()).limit(1))).scalar_one_or_none()
+            if reveal_end:
+                await connection_manager.send_personal({'type': 'event_started', 'data': {
+                    'event_type': 'REVEAL', 'duration_seconds': max(0, math.ceil((reveal_end - now).total_seconds())),
+                    'notify': False,
+                }}, player_id)
+            viewer_side = player_state.role_ref.victory_condition if player_state.role_ref else None
+            for zone in await ZoneService(db).get_active_zones(game_id):
+                if zone.type == ZoneType.SAFE:
+                    continue
+                if zone.type in (ZoneType.TRAP, ZoneType.SNARE):
+                    creator = await db.get(Player, zone.created_by) if zone.created_by else None
+                    creator_role = await db.get(Role, creator.role_id) if creator else None
+                    if not creator_role or creator_role.victory_condition != viewer_side:
+                        continue
+                visible_type = (ZoneType.DANGER if zone.type in (ZoneType.SAFE_HOUSE, ZoneType.SAFE_MANSION)
+                                and viewer_side == VictoryConditionType.SEEKER else zone.type)
+                await connection_manager.send_personal({'type': 'create_zone', 'data': {
+                    'zone_id': str(zone.id), 'zone_type': visible_type.value,
+                    'center_lat': zone.center_lat, 'center_lng': zone.center_lng, 'radius': zone.radius,
+                    'remaining_seconds': max(0, math.ceil((zone.ends_at - now).total_seconds())) if zone.ends_at else None,
+                }}, player_id)
             traps = (await db.execute(select(PlayerEffect, Player)
                      .join(Player, PlayerEffect.player_id == Player.id)
                      .where(Player.game_id == game_id, PlayerEffect.type == EffectType.TRAPPED,
@@ -233,7 +270,7 @@ async def handle_client_message(
                 await connection_manager.send_personal({'type': 'trap_activated', 'data': {
                     'effect_id': str(effect.id), 'zone_type': trap['zone_type'],
                     'center_lat': trap['center_lat'], 'center_lng': trap['center_lng'],
-                    'radius': trap['radius'], 'remaining_seconds': max(0, int((effect.ends_at - now).total_seconds())),
+                    'radius': trap['radius'], 'remaining_seconds': max(0, math.ceil((effect.ends_at - now).total_seconds())),
                     'player_name': victim.name, 'is_victim': victim.id == player_id, 'notify': False,
                 }}, player_id)
         except Exception as e:
