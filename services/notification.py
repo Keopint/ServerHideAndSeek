@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 from services.websocket_manager import connection_manager
 
@@ -32,6 +33,10 @@ class NotificationService:
     async def notify_player_moved(self, game_id: uuid.UUID, player_id: uuid.UUID, lat: float, lng: float):
         await self.broadcast_to_game(game_id, {
             "type": "player_moved",
-            "player_id": str(player_id),
-            "location": {"lat": lat, "lng": lng}
+            "data": {
+                "player_id": str(player_id),
+                "location_lat": lat,
+                "location_lng": lng,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
         }, exclude_player=player_id)

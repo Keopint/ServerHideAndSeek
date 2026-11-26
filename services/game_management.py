@@ -1,4 +1,5 @@
 import uuid
+import math
 from sqlalchemy.orm import selectinload
 
 from database.models import Game, Player, Role, game_roles, ZoneType, Ability, role_abilities, \
@@ -271,13 +272,14 @@ class GameService(BaseService):
                 raise ValueError("Not all players active")
 
             game.status = GameStatus.HIDE_TIME
+            now = datetime.now(timezone.utc)
+            phase_deadline = now + timedelta(seconds=game.time_to_hide)
+            game.phase_ends_at = phase_deadline
 
             await self.db.commit()
             await self.db.refresh(game)
 
-            now = datetime.now(timezone.utc)
             duration_seconds = game.time_to_hide
-            phase_deadline = now + timedelta(seconds=duration_seconds)
             timer_manager.set_phase_deadline(game_id, phase_deadline)
 
             await connection_manager.broadcast_to_game(
@@ -309,19 +311,25 @@ class GameService(BaseService):
                 await connection_manager.broadcast_to_game(game_id=game_id, message={
                     "type": "timer_to_hide_finished", "data": {}
                 })
-                await GameService(db).start_active_game(game_id)
+                await GameService(db).start_active_game(game_id, started_at=game.phase_ends_at)
             break
 
-    async def start_active_game(self, game_id: uuid.UUID):
+    async def start_active_game(self, game_id: uuid.UUID, started_at: datetime | None = None):
         try:
-            game = await self.db.get(Game, game_id)
+            game = (await self.db.execute(select(Game).where(Game.id == game_id).with_for_update())).scalar_one_or_none()
+            if not game or game.status != GameStatus.HIDE_TIME:
+                return game
             game.status = GameStatus.ACTIVE
+            now = started_at or datetime.now(timezone.utc)
+            phase_deadline = now + timedelta(seconds=game.game_duration)
+            game.phase_ends_at = phase_deadline
             await self.db.commit()
             await self.db.refresh(game)
-            now = datetime.now(timezone.utc)
-            duration_seconds = game.game_duration
-            phase_deadline = now + timedelta(seconds=duration_seconds)
+            duration_seconds = max(0, math.ceil((phase_deadline - datetime.now(timezone.utc)).total_seconds()))
             timer_manager.set_phase_deadline(game_id, phase_deadline)
+            if duration_seconds == 0:
+                await self.finish_game(game_id)
+                return game
             await connection_manager.broadcast_to_game(
                 message={
                     "type": "start_timer_for_game",
@@ -334,7 +342,7 @@ class GameService(BaseService):
             from database.db import get_db
             async for db in get_db():
                 zone_service = ZoneService(db)
-                await zone_service.activate_safe_zone(game.id)
+                await zone_service.activate_safe_zone(game.id, end_time=phase_deadline)
                 break
             await timer_manager.timer(
                 game_id=game_id,
@@ -387,6 +395,7 @@ class GameService(BaseService):
             if not game or game.status == GameStatus.FINISHED:
                 return
             game.status = GameStatus.FINISHED
+            game.phase_ends_at = None
             timer_manager.clear_phase_deadline(game_id)
 
             player_service = PlayerService(self.db)

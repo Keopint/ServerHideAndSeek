@@ -233,6 +233,7 @@ class Game(Base):
     current_safe_zone_id = Column(UUID(as_uuid=True), ForeignKey("game_zones.id"),
                                   comment="optional, references active safe zone")
     last_shrink_at = Column(DateTime(timezone=True), comment="last time when zone was active")
+    phase_ends_at = Column(DateTime(timezone=True), nullable=True, comment="конец текущей игровой фазы")
 
     players = relationship("Player", back_populates="game", cascade="all, delete-orphan")
     roles = relationship(

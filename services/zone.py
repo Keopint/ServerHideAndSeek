@@ -36,7 +36,8 @@ class ZoneService(BaseService):
 
     async def activate_safe_zone(
         self,
-        game_id: uuid.UUID
+        game_id: uuid.UUID,
+        end_time: datetime | None = None
     ):
         stmt = select(GameZone).where(
             GameZone.game_id == game_id,
@@ -53,7 +54,7 @@ class ZoneService(BaseService):
         await timer_manager.safe_zone_schedule(
             game_id=game_id,
             safe_zone=safe_zone,
-            end_time=now + timedelta(seconds=duration_seconds),
+            end_time=end_time or now + timedelta(seconds=duration_seconds),
             db=self.db
         )
 

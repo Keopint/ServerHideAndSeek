@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+import pytest
 from fastapi.testclient import TestClient
 
 from database.db import get_database_url
@@ -57,3 +59,67 @@ def test_join_websocket_address(monkeypatch, public, expected):
         assert response.json()["ws_url"] == f"{expected}{game_id}/{player_id}"
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_init_db_ensures_phase_column(monkeypatch):
+    import database.db as db_module
+
+    executed = []
+
+    class Connection:
+        async def execute(self, statement):
+            executed.append(str(statement))
+
+    class Begin:
+        async def __aenter__(self):
+            return Connection()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Engine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(db_module, 'get_database_url', lambda: 'postgresql+asyncpg://test')
+    monkeypatch.setattr(db_module, 'create_async_engine', lambda *args, **kwargs: Engine())
+    monkeypatch.setattr(db_module, 'sessionmaker', lambda *args, **kwargs: object())
+
+    old_engine, old_session = db_module.engine, db_module.AsyncSessionLocal
+    db_module.engine, db_module.AsyncSessionLocal = None, None
+    try:
+        await db_module.init_db()
+    finally:
+        db_module.engine, db_module.AsyncSessionLocal = old_engine, old_session
+
+    assert any('ADD COLUMN IF NOT EXISTS phase_ends_at' in statement for statement in executed)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_restores_timers(monkeypatch):
+    import main
+
+    calls = []
+
+    async def fake_init_db():
+        calls.append('init_db')
+
+    def fake_register(app):
+        calls.append('register_ws')
+
+    async def fake_recover_phase():
+        calls.append('phase')
+
+    async def fake_recover_zone_effects():
+        calls.append('zone_effects')
+
+    monkeypatch.setattr(main, 'init_db', fake_init_db)
+    monkeypatch.setattr(main, 'register_websocket_endpoint', fake_register)
+    monkeypatch.setattr('services.timer_recovery.recover_phase_timers', fake_recover_phase)
+    monkeypatch.setattr('services.timer_recovery.recover_zone_and_effect_timers', fake_recover_zone_effects)
+
+    async with main.lifespan(main.app):
+        pass
+
+    assert calls == ['init_db', 'register_ws', 'phase', 'zone_effects']

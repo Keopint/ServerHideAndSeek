@@ -5,7 +5,7 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType, Player, PlayerEffect, EffectType, ZoneType, Role, GameEvent, EventType
+from database.models import GameStatus, PlayerDeathCauses, Game, VictoryConditionType, Player, PlayerEffect, EffectType, ZoneType, Role, GameEvent, EventType, GameZone
 from sqlalchemy import select
 from database.db import get_db
 from services.game_management import GameService
@@ -170,12 +170,41 @@ async def handle_client_message(
                 "message": "Missing lat/lng"
             }, player_id)
             return
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except (TypeError, ValueError):
+            await connection_manager.send_personal({
+                "type": "error",
+                "message": "Invalid lat/lng"
+            }, player_id)
+            return
 
         # Обновить позицию игрока через сервис
         try:
-            await player_service.update_player_location(game_id, player_id, lat, lng)
+            player = await player_service.update_player_location(game_id, player_id, lat, lng)
             await db.commit()
-            # Точные координаты не рассылаются противникам обычным обновлением.
+            # Союзники по роли всегда видят друг друга. Противникам координаты не уходят.
+            if player.is_alive:
+                rows = (await db.execute(
+                    select(Player.id, Role.victory_condition)
+                    .join(Role, Player.role_id == Role.id)
+                    .where(Player.game_id == game_id, Player.is_alive.is_(True))
+                )).all()
+                viewer_side = next((side for pid, side in rows if pid == player_id), None)
+                moved_message = {
+                    "type": "player_moved",
+                    "data": {
+                        "player_id": str(player_id),
+                        "location_lat": lat,
+                        "location_lng": lng,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                }
+                for ally_id, side in rows:
+                    if ally_id == player_id or side != viewer_side:
+                        continue
+                    await connection_manager.send_personal(moved_message, ally_id)
         except ValueError as e:
             await connection_manager.send_personal({
                 "type": "error",
@@ -231,7 +260,8 @@ async def handle_client_message(
             player_data['ability_state'] = await player_service.get_ability_state(player_id)
             player_data['passive_effects'] = await player_service.get_passive_effect_state(player_id)
             game_data = game_to_dict(game_with_relation, player_id)
-            game_data['phase_remaining_seconds'] = timer_manager.phase_remaining_seconds(game_id)
+            game_data['phase_remaining_seconds'] = (max(0, math.ceil((game_with_relation.phase_ends_at - datetime.now(timezone.utc)).total_seconds()))
+                                                     if game_with_relation.phase_ends_at else timer_manager.phase_remaining_seconds(game_id))
             await connection_manager.send_personal({
                 "type": "game_state",
                 "data": {
@@ -240,6 +270,13 @@ async def handle_client_message(
                 }
             }, player_id)
             now = datetime.now(timezone.utc)
+            safe_zone = await db.get(GameZone, game_with_relation.current_safe_zone_id, populate_existing=True) if game_with_relation.current_safe_zone_id else None
+            next_zone = (safe_zone.zone_data or {}).get('next_safe_zone') if safe_zone else None
+            if next_zone:
+                deadline = datetime.fromisoformat(next_zone['ends_at'])
+                await connection_manager.send_personal({'type': 'next_safe_zone', 'data': {
+                    **next_zone, 'remaining_seconds': max(0, math.ceil((deadline - now).total_seconds()))
+                }}, player_id)
             reveal_end = (await db.execute(select(GameEvent.ends_at).where(
                 GameEvent.game_id == game_id, GameEvent.event_type == EventType.REVEAL,
                 GameEvent.ends_at > now).order_by(GameEvent.ends_at.desc()).limit(1))).scalar_one_or_none()
@@ -346,6 +383,8 @@ async def handle_client_message(
 
 # регистрация websocket_endpoint
 def register_websocket_endpoint(app):
+    if any(getattr(route, "path", None) == "/ws/{game_id}/{player_id}" for route in app.routes):
+        return
     print("=== Registering WebSocket endpoint ===")
     @app.websocket("/ws/{game_id}/{player_id}")
     async def websocket_endpoint(websocket: WebSocket, game_id: str, player_id: str):

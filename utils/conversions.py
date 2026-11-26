@@ -6,6 +6,12 @@ from sqlalchemy.orm import attributes
 from database.models import Game
 
 
+def player_side(player) -> object | None:
+    """Сторона игрока (victory_condition его роли) или None, если роль не загружена."""
+    role = getattr(player, 'role_ref', None)
+    return getattr(role, 'victory_condition', None) if role is not None else None
+
+
 def game_to_dict(game: Game, viewer_id=None) -> dict:
     result = {
         "id": str(game.id),
@@ -27,9 +33,16 @@ def game_to_dict(game: Game, viewer_id=None) -> dict:
         "roles": [to_dict(r) for r in game.roles],
         "events": [to_dict(e) for e in game.events],
     }
-    # Координаты других игроков не отправляются в снимке состояния.
-    for player in result['players']:
-        if player.get('id') != str(viewer_id):
+    # Координаты видны только самому игроку и союзникам по роли (одинаковый victory_condition).
+    viewer_side = next(
+        (player_side(player) for player in game.players
+         if str(getattr(player, 'id', '')) == str(viewer_id)),
+        None,
+    )
+    for player_obj, player in zip(game.players, result['players']):
+        is_viewer = str(player.get('id')) == str(viewer_id)
+        is_ally = viewer_side is not None and player_side(player_obj) == viewer_side
+        if not is_viewer and not is_ally:
             player['location_lat'] = None
             player['location_lng'] = None
             player['last_location_update'] = None

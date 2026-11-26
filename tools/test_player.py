@@ -16,7 +16,9 @@ from websockets.exceptions import WebSocketException
 
 
 HELP = r"""Команды:
-   .\.venv\Scripts\python.exe tools\test_player.py --code 6WN2X6 --name Kira16 --lat 55.6650000004 --lng 37.551
+   .\.venv\Scripts\python.exe tools\test_player.py --code UBA5DR --name Kira1 --lat 55.6658000004 --lng 37.551
+   .\.venv\Scripts\python.exe tools\test_player.py --code UBA5DR --name Kira1 --lat 55.6660000004 --lng 37.551
+
   roles                показать доступные роли
   role НОМЕР           выбрать роль из списка (в лобби)
   ready / unready      подтвердить / отменить готовность

@@ -178,6 +178,59 @@ def test_other_players_coordinates_are_not_in_state(monkeypatch):
     assert state['players'][1]['location_lng'] is None
 
 
+def test_allies_coordinates_are_visible_in_state(monkeypatch):
+    from utils import conversions
+    own, ally, enemy = uuid4(), uuid4(), uuid4()
+    seeker = SimpleNamespace(victory_condition=VictoryConditionType.SEEKER)
+    hider = SimpleNamespace(victory_condition=VictoryConditionType.HIDER)
+    players = [
+        SimpleNamespace(id=own, role_ref=seeker),
+        SimpleNamespace(id=ally, role_ref=seeker),
+        SimpleNamespace(id=enemy, role_ref=hider),
+    ]
+    monkeypatch.setattr(conversions, 'to_dict', lambda p: {
+        'id': str(p.id), 'location_lat': 55.0, 'location_lng': 37.0, 'last_location_update': 'now'
+    })
+    game = SimpleNamespace(id=uuid4(), game_code='ABCDEF', name='test', status=SimpleNamespace(value='ACTIVE'),
+        created_at=datetime.now(timezone.utc), safe_zone_center_lat=0, safe_zone_center_lng=0,
+        safe_zone_radius=100, min_zone_radius=10, zone_shrink_interval=60, game_duration=600,
+        time_to_hide=60, zone_boundary_damage=1, current_safe_zone_id=None, last_shrink_at=None,
+        players=players, roles=[], events=[])
+    state = conversions.game_to_dict(game, own)
+    assert state['players'][0]['location_lat'] == 55.0
+    assert state['players'][1]['location_lat'] == 55.0
+    assert state['players'][2]['location_lat'] is None
+    assert state['players'][2]['location_lng'] is None
+
+
+@pytest.mark.asyncio
+async def test_update_location_is_shared_only_with_allies(monkeypatch):
+    game_id, viewer, ally, enemy = uuid4(), uuid4(), uuid4(), uuid4()
+    player = SimpleNamespace(is_alive=True)
+    service = SimpleNamespace(update_player_location=AsyncMock(return_value=player))
+    monkeypatch.setattr(websocketRoutes, 'PlayerService', lambda db: service)
+    rows = [(viewer, VictoryConditionType.SEEKER),
+            (ally, VictoryConditionType.SEEKER),
+            (enemy, VictoryConditionType.HIDER)]
+    db = SimpleNamespace(commit=AsyncMock(),
+                         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)))
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(websocketRoutes.connection_manager, 'send_personal', send)
+
+    await websocketRoutes.handle_client_message(
+        game_id, viewer, {'type': 'update_location', 'data': {'lat': 1.5, 'lng': 2.5}}, db)
+
+    service.update_player_location.assert_awaited_once_with(game_id, viewer, 1.5, 2.5)
+    send.assert_awaited_once()
+    message, recipient = send.await_args.args
+    assert recipient == ally
+    assert message['type'] == 'player_moved'
+    assert message['data']['player_id'] == str(viewer)
+    assert message['data']['location_lat'] == 1.5
+    assert message['data']['location_lng'] == 2.5
+    assert 'timestamp' in message['data']
+
+
 @pytest.mark.asyncio
 async def test_start_rejects_one_player(monkeypatch):
     game = SimpleNamespace(status=GameStatus.WAITING)

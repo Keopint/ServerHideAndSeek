@@ -1,6 +1,21 @@
 import math
+import random
 from typing import Tuple
 from database.models import Player
+
+
+def choose_next_zone_center(lat: float, lng: float, current_radius: float, next_radius: float):
+    """Равномерно выбирает центр следующего круга целиком внутри текущего."""
+    if not 0 <= next_radius <= current_radius:
+        raise ValueError('Радиус следующей зоны должен быть внутри текущей')
+    distance = (current_radius - next_radius) * math.sqrt(random.random())
+    bearing = random.uniform(0.0, 2.0 * math.pi)
+    angular = distance / 6371000.0
+    lat1, lng1 = math.radians(lat), math.radians(lng)
+    lat2 = math.asin(math.sin(lat1) * math.cos(angular) + math.cos(lat1) * math.sin(angular) * math.cos(bearing))
+    lng2 = lng1 + math.atan2(math.sin(bearing) * math.sin(angular) * math.cos(lat1),
+                            math.cos(angular) - math.sin(lat1) * math.sin(lat2))
+    return math.degrees(lat2), (math.degrees(lng2) + 180.0) % 360.0 - 180.0
 
 def validate_coordinates(lat: float, lng: float) -> bool:
     """Проверяет, что координаты находятся в допустимых пределах."""

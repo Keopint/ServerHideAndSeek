@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timezone, timedelta
 
 from services.websocket_manager import connection_manager
-from utils.geo import calculate_distance, calculate_distance_between_two_players
+from utils.geo import calculate_distance, calculate_distance_between_two_players, choose_next_zone_center
 
 logger = logging.getLogger(__name__)
 
@@ -414,88 +414,80 @@ class TimerManager():
            :param callback: функция, вызываемая после каждого успешного уменьшения (может обновлять клиентов)
            :param db: асинхронная сессия SQLAlchemy
        """
-        # Получаем параметры игры
+        from database.models import GameStatus, PlayerDeathCauses
         game = await db.get(Game, game_id)
-
-        initial_radius = safe_zone.radius
-        min_radius = game.min_zone_radius
         total_duration = (end_time - datetime.now(timezone.utc)).total_seconds()
-
-        if total_duration <= 0:
-            # Игра уже должна была закончиться
+        if not game or game.zone_shrink_interval <= 0 or total_duration <= 0 or safe_zone.radius <= game.min_zone_radius:
             return
-
-        # Количество шагов (уменьшений) – можно сделать фиксированным или динамическим
+        zone_id = safe_zone.id
         steps = max(1, int(total_duration // game.zone_shrink_interval))
-        step_radius = (initial_radius - min_radius) / steps
+        step_radius = (safe_zone.radius - game.min_zone_radius) / steps
 
-        async def shrink_step(
-                step_number: int,
-                current_radius: float,
-                remaining_steps: int
-        ):
-            # Не изменяем территорию после завершения игры.
-            from database.models import GameStatus
-            async for fresh_db in get_db():
-                current_game = await fresh_db.get(Game, game_id)
-                if not current_game or current_game.status != GameStatus.ACTIVE:
+        async def plan_next(remaining_steps):
+            async for session in get_db():
+                current_game = await session.get(Game, game_id)
+                zone = await session.get(GameZone, zone_id)
+                if not current_game or current_game.status != GameStatus.ACTIVE or not zone:
                     return
-                break
-            # Расчёт нового радиуса
-            new_radius = max(min_radius, current_radius - step_radius)
+                radius = max(current_game.min_zone_radius, zone.radius - step_radius)
+                lat, lng = choose_next_zone_center(zone.center_lat, zone.center_lng, zone.radius, radius)
+                deadline = datetime.now(timezone.utc) + timedelta(seconds=current_game.zone_shrink_interval)
+                if deadline >= end_time:
+                    zone.zone_data = {key: value for key, value in (zone.zone_data or {}).items() if key != 'next_safe_zone'}
+                    await session.commit()
+                    await connection_manager.broadcast_to_game(game_id, {'type': 'next_safe_zone', 'data': {'available': False}})
+                    return
+                next_zone = {'center_lat': lat, 'center_lng': lng, 'radius': radius, 'ends_at': deadline.isoformat()}
+                zone.zone_data = {**(zone.zone_data or {}), 'next_safe_zone': next_zone}
+                await session.commit()
+                await connection_manager.broadcast_to_game(game_id, {'type': 'next_safe_zone', 'data': {
+                    **next_zone, 'remaining_seconds': max(0, math.ceil((deadline - datetime.now(timezone.utc)).total_seconds()))
+                }})
+                await self.schedule(game_id, TimerType.ZONE_SHRINK, zone_id, deadline,
+                                    lambda: shrink_step(remaining_steps))
+                return
 
-            # Обновляем запись в БД и сразу фиксируем
-            stmt = (
-                update(GameZone)
-                .where(GameZone.id == safe_zone.id)
-                .values(radius=new_radius, zone_data={"last_shrink": datetime.now(timezone.utc).isoformat()})
-            )
-            # Таймер живёт дольше запроса, поэтому использует собственную сессию.
-            async for fresh_db in get_db():
-                await fresh_db.execute(stmt)
-                await fresh_db.execute(update(Game).where(Game.id == game_id).values(safe_zone_radius=new_radius))
-                await fresh_db.commit()
-                break
+        async def shrink_step(remaining_steps):
+            from services.player import PlayerService
+            async for session in get_db():
+                current_game = await session.get(Game, game_id)
+                zone = await session.get(GameZone, zone_id)
+                if not current_game or current_game.status != GameStatus.ACTIVE or not zone:
+                    return
+                planned = (zone.zone_data or {}).get('next_safe_zone')
+                if not planned:
+                    return
+                zone.center_lat, zone.center_lng, zone.radius = planned['center_lat'], planned['center_lng'], planned['radius']
+                zone.zone_data = {key: value for key, value in (zone.zone_data or {}).items() if key != 'next_safe_zone'}
+                current_game.safe_zone_center_lat, current_game.safe_zone_center_lng = zone.center_lat, zone.center_lng
+                current_game.safe_zone_radius = zone.radius
+                players = (await session.execute(select(Player).where(Player.game_id == game_id, Player.is_alive.is_(True)))).scalars().all()
+                outside = [p for p in players if p.location_lat is not None and p.location_lng is not None and
+                           calculate_distance(p.location_lat, p.location_lng, zone.center_lat, zone.center_lng) > zone.radius]
+                for player in outside:
+                    player.is_alive = False
+                    player.health = 0
+                await session.commit()
+                await connection_manager.broadcast_to_game(game_id, {'type': 'update_safe_zone', 'data': {
+                    'safe_zone_id': str(zone_id), 'new_radius': zone.radius,
+                    'center_lat': zone.center_lat, 'center_lng': zone.center_lng
+                }})
+                for player in outside:
+                    await connection_manager.send_personal({'type': 'you_died', 'data': {
+                        'reason': PlayerDeathCauses.HP_ARE_OVER.value, 'hunter_player_id': None}}, player.id)
+                    await connection_manager.broadcast_to_game(game_id, {'type': 'player_died', 'data': {
+                        'reason': PlayerDeathCauses.HP_ARE_OVER.value, 'player_id': str(player.id)}}, exclude_player=player.id)
+                    connection_manager.disconnect(game_id, player.id)
+                if outside:
+                    await PlayerService(session)._finish_game_if_side_eliminated(game_id)
+                await session.refresh(current_game)
+                if current_game.status == GameStatus.ACTIVE and remaining_steps > 1 and zone.radius > current_game.min_zone_radius:
+                    await plan_next(remaining_steps - 1)
+                else:
+                    await connection_manager.broadcast_to_game(game_id, {'type': 'next_safe_zone', 'data': {'available': False}})
+                return
 
-            # ТОЛЬКО ПОСЛЕ ЭТОГО отправляем сообщения игрокам
-            await connection_manager.broadcast_to_game(
-                game_id=game_id,
-                message={
-                    "type": "update_safe_zone",
-                    "data": {
-                        "safe_zone_id": str(safe_zone.id),
-                        "new_radius": new_radius
-                    }
-                }
-            )
-
-            # Если ещё не достигли минимума и есть следующие шаги, планируем следующий
-            if new_radius > min_radius and remaining_steps > 1:
-                # Планируем следующий шаг через zone_shrink_interval секунд
-                await self.schedule(
-                    game_id=game_id,
-                    entity_type=TimerType.ZONE_SHRINK,
-                    entity_id=safe_zone.id,
-                    end_time=datetime.now(timezone.utc) + timedelta(seconds=game.zone_shrink_interval),
-                    callback=lambda: shrink_step(
-                        step_number + 1,
-                        new_radius,
-                        remaining_steps - 1
-                    )
-                )
-
-        # Запускаем первый шаг
-        await self.schedule(
-            game_id=game_id,
-            entity_type=TimerType.ZONE_SHRINK,
-            entity_id=safe_zone.id,
-            end_time=datetime.now(timezone.utc) + timedelta(seconds=game.zone_shrink_interval),
-            callback=lambda: shrink_step(
-                1,
-                initial_radius,
-                steps
-            )
-        )
+        await plan_next(steps)
 
     async def cancel(self, task_key: str) -> bool:
         task = self._tasks.pop(task_key, None)

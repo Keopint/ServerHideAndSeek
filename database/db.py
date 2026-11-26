@@ -1,6 +1,12 @@
-"""Подключение к PostgreSQL; схема управляется Alembic, а не запуском сервера."""
+"""Подключение к PostgreSQL.
+
+Схема управляется Alembic. При запуске дополнительно выполняется
+идемпотентная проверка колонок, добавленных последними миграциями:
+это позволяет поднять сервер на БД, где миграция ещё не применялась.
+"""
 import os
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -22,6 +28,10 @@ async def init_db():
     if engine is not None:
         return
     engine = create_async_engine(get_database_url(), pool_pre_ping=True)
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            'ALTER TABLE games ADD COLUMN IF NOT EXISTS phase_ends_at TIMESTAMPTZ'
+        ))
     AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
